@@ -69,7 +69,7 @@ export default function LiveAlerts({ data, onLocate, onWatchFeed }: LiveAlertsPr
     data.news.forEach((a: any) => {
       alerts.push({
         type: 'news', title: a.title, description: a.description, source: a.source,
-        lat: a.coords?.[0], lng: a.coords?.[1], time: a.published,
+        lat: a.coords?.[0], lng: a.coords?.[1], time: a.published, lean: a.lean,
         severity: (a.risk_score ?? 1) >= 8 ? 'CRITICAL' : (a.risk_score ?? 1) >= 6 ? 'HIGH' : (a.risk_score ?? 1) >= 4 ? 'ELEVATED' : 'LOW',
         url: a.link,
       });
@@ -204,8 +204,11 @@ export default function LiveAlerts({ data, onLocate, onWatchFeed }: LiveAlertsPr
                           </span>
                         </div>
                         <div className="flex items-center justify-between border-t border-[#2A2A28]/50 pt-1.5 mt-1.5">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-x-2 gap-y-1 min-w-0 flex-wrap">
                             <span className="text-[10px] font-mono text-[#8A8880] uppercase tracking-wider">{alert.source}</span>
+                            {alert.lean && (
+                              <span className="text-[9px] font-mono text-[#5C5A54] uppercase tracking-wider">{alert.lean}</span>
+                            )}
                             {alert.time && (
                               <span className="text-[10px] font-mono text-[#5C5A54] flex items-center gap-1 border-l border-[#2A2A28] pl-2">
                                 <Clock className="w-2.5 h-2.5" />

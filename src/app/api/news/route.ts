@@ -7,11 +7,19 @@ import crypto from 'crypto';
  * to traditional intelligence sources if Telegram blocks the IP.
  */
 
-const TELEGRAM_CHANNELS = [
-  'OSINTtechnical',
-  'Faytuks',
-  'Liveuamap',
-  'CyberKnow'
+// Public Telegram OSINT channels, deliberately spanning the spectrum so no single
+// narrative owns the feed. `lean` travels with every item through to the UI, so
+// nothing here can be mistaken for neutral wire copy.
+const TELEGRAM_CHANNELS: { handle: string; lean: string }[] = [
+  { handle: 'OSINTtechnical',        lean: 'Western OSINT' },
+  { handle: 'liveuamap',             lean: 'Pro-Western / Ukraine' },
+  { handle: 'nexta_live',            lean: 'Eastern European / Anti-RU' },
+  { handle: 'clashreport',           lean: 'Turkish / NATO leaning' },
+  { handle: 'Slavyangrad',           lean: 'Pro-Russian / Multipolar' },
+  { handle: 'DDGeopolitics',         lean: 'Multipolar / Russian' },
+  { handle: 'rybar_in_english',      lean: 'Top-tier Russian OSINT' },
+  { handle: 'Middle_East_Spectator', lean: 'Middle East / Resistance Axis' },
+  { handle: 'BellumActaNews',        lean: 'Raw / Uncensored global OSINT' },
 ];
 
 const FALLBACK_FEEDS = {
@@ -61,13 +69,15 @@ export function findCoords(text: string): { coords: [number, number]; anchor: st
   return null;
 }
 
-function parseTelegramHTML(html: string, channel: string): any[] {
+export function parseTelegramHTML(html: string, channel: string, lean: string): any[] {
   const items: any[] = [];
   const messageBlockRegex = /<div class="tgme_widget_message_wrap js-widget_message_wrap"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/gi;
   let blockMatch;
 
   while ((blockMatch = messageBlockRegex.exec(html)) !== null) {
     const blockHtml = blockMatch[0];
+    // "X pinned a photo", "Channel name was changed to ..." — chrome, not intel.
+    if (blockHtml.includes('service_message')) continue;
     const textRegex = /<div class="tgme_widget_message_text[^>]*>([\s\S]*?)<\/div>/i;
     const textMatch = blockHtml.match(textRegex);
     if (!textMatch) continue;
@@ -82,7 +92,7 @@ function parseTelegramHTML(html: string, channel: string): any[] {
 
     const title = text.split('\n')[0].substring(0, 100);
 
-    items.push({ title, description: text, link, pubDate, source: `t.me/${channel}` });
+    items.push({ title, description: text, link, pubDate, source: `t.me/${channel}`, lean });
   }
   return items;
 }
@@ -115,15 +125,15 @@ function parseRSSItems(xml: string, sourceName: string): any[] {
 
 export async function GET() {
   try {
-    const feedPromises = TELEGRAM_CHANNELS.map(async (channel) => {
+    const feedPromises = TELEGRAM_CHANNELS.map(async ({ handle, lean }) => {
       try {
-        const res = await fetch(`https://t.me/s/${channel}`, { 
+        const res = await fetch(`https://t.me/s/${handle}`, { 
           signal: AbortSignal.timeout(8000), 
           headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' } 
         });
         if (!res.ok) return [];
         const html = await res.text();
-        return parseTelegramHTML(html, channel).slice(-8);
+        return parseTelegramHTML(html, handle, lean).slice(-8);
       } catch { return []; }
     });
 
@@ -163,6 +173,7 @@ export async function GET() {
         link: article.link,
         published: article.pubDate,
         source: article.source,
+        lean: article.lean ?? null,
         risk_score: risk.score,
         /* How the score was produced, and from what. Both fields exist so no
            consumer has to take the number on trust. */
