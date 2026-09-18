@@ -12,8 +12,8 @@ export const metadata: Metadata = {
  * Every claim on this page is drawn from the code in this repository, not from
  * a template. When a data flow changes, this page changes with it.
  *
- * Reviewed 2026-09-15 against: src/app/api/geo, src/app/api/osint/*,
- * src/app/api/ai/*, src/app/page.tsx.
+ * Reviewed 2026-09-17 against: src/app/api/geo, src/app/api/osint/*,
+ * src/app/api/ai/*, src/app/page.tsx, src/components/LiveAlerts.tsx.
  */
 
 const SERVICES: { service: string; sent: string; when: string }[] = [
@@ -24,7 +24,8 @@ const SERVICES: { service: string; sent: string; when: string }[] = [
   { service: 'crt.sh', sent: 'The domain you search', when: 'Certificate transparency lookups' },
   { service: 'api.github.com', sent: 'The username you search', when: 'GitHub account lookups' },
   { service: 'otx.alienvault.com, cve.circl.lu, cveawg.mitre.org', sent: 'The indicator or CVE you search', when: 'Threat and vulnerability lookups' },
-  { service: 'Google Gemini', sent: 'The feed context you submit for analysis', when: 'AI briefing and analysis requests' },
+  { service: 'Google Gemini', sent: 'The feed context you submit for analysis, including Live Alerts headlines', when: 'AI briefing, analysis and overview requests, when the instance has a Gemini key' },
+  { service: 'Telegram (cdn*.telesco.pe)', sent: 'Your IP address, as with any image request', when: 'When you expand a Live Alert that has a photo or video preview' },
 ];
 
 export default function PrivacyPage() {
@@ -117,7 +118,7 @@ export default function PrivacyPage() {
         </section>
 
         <p className="mt-10 text-[11px] text-[var(--text-muted)]">
-          Last reviewed against the codebase: 15 September 2026.
+          Last reviewed against the codebase: 17 September 2026.
         </p>
       </div>
     </main>

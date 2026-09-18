@@ -232,8 +232,8 @@ export const API_GROUPS: ApiGroup[] = [
       {
         path: '/api/news',
         method: 'GET',
-        summary: 'Aggregated OSINT news items. risk_score is a keyword count, not a model output, and coords are preset country anchors.',
-        returns: ['news', 'total', 'timestamp'],
+        summary: 'Telegram OSINT posts with the declared lean of each channel, media, cross-posts and a per-source health report. risk_score is a keyword count, not a model output, and coords are preset country anchors.',
+        returns: ['news', 'total', 'sources', 'timestamp'],
       },
       {
         path: '/api/live-news',
@@ -579,14 +579,14 @@ export const API_GROUPS: ApiGroup[] = [
       {
         path: '/api/ai/overview',
         method: 'POST',
-        summary: 'Short headline highlights for the overview panel.',
-        returns: ['highlights', 'generatedAt'],
+        summary: 'One-click read-out for the Alerts or Markets panel. Alerts also return a structured brief: threads by theatre, perspective and seismic summary.',
+        returns: ['mode', 'overview', 'highlights', 'generatedBy', 'generatedAt', 'brief'],
         bodyExample: `{
-  "earthquakes": [],
-  "news": [],
-  "threats": [],
-  "cyberAlerts": [],
-  "timestamp": "2026-07-29T12:00:00Z"
+  "mode": "alerts",
+  "payload": {
+    "news": [{ "id": "a1", "title": "Drone attack on Kharkiv", "source": "t.me/liveuamap", "bloc": "western", "published": "2026-09-17T11:00:00Z" }],
+    "earthquakes": [{ "magnitude": 5.4, "place": "80 km S of Kuril", "time": 1789646400000 }]
+  }
 }`,
       },
     ],

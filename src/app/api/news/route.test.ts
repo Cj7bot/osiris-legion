@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { scoreRisk, findCoords, parseTelegramHTML } from './route';
+import { scoreRisk, findCoords, mergeCrossPosts, recentPosts, type ChannelPost } from './route';
+import type { TelegramPost } from '@/lib/telegram';
 
 describe('scoreRisk', () => {
   it('reports the terms that produced the score', () => {
@@ -16,6 +17,19 @@ describe('scoreRisk', () => {
     const text = 'war missile strike attack nuclear invasion bomb drone killed destroyed';
     expect(scoreRisk(text).score).toBe(10);
     expect(scoreRisk(text)).toEqual(scoreRisk(text));
+  });
+
+  /* Each of these matched as a substring before: "award" and "software" as
+     war, "cooperation" as operation, "Bombay" as bomb. */
+  it('matches whole words, not fragments of other words', () => {
+    expect(scoreRisk('Software award for regional cooperation announced in Bombay').matched).toEqual([]);
+    expect(scoreRisk('A warning was issued').matched).toEqual([]);
+  });
+
+  it('still counts plural and past-tense forms', () => {
+    expect(scoreRisk('Drones attacked two depots; strikes continued').matched)
+      .toEqual(expect.arrayContaining(['drone', 'attack', 'strike']));
+    expect(scoreRisk('Civilian casualties reported').matched).toEqual(['casualty']);
   });
 });
 
@@ -38,25 +52,64 @@ describe('findCoords', () => {
   });
 });
 
-/* Trimmed from a real t.me/s/ page: one post, one service notice. */
-const post = (inner: string, cls = 'tgme_widget_message text_not_supported_wrap js-widget_message') => `<div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="${cls}" data-post="ch/1">
-<div class="tgme_widget_message_text js-message_text" dir="auto">${inner}</div>
-<a class="tgme_widget_message_date" href="https://t.me/ch/1"><time datetime="2026-09-14T12:00:00+00:00" class="time">12:00</time></a>
-</div>
-</div>
-</div>`;
+const channel = (handle: string, bloc: 'western' | 'russian' = 'western') => ({ handle, name: handle, lean: 'x', bloc });
+const post = (id: string, text: string, publishedAt: string): TelegramPost => ({
+  id, channel: id.split('/')[0], url: `https://t.me/${id}`, publishedAt, text,
+  headline: text, flag: null, summary: '', media: null, forwardedFrom: null, replyTo: null, views: null,
+});
 
-describe('parseTelegramHTML', () => {
-  it('tags every item with the channel and its declared lean', () => {
-    const items = parseTelegramHTML(post('Missile strike reported near the frontline'), 'ch', 'Pro-Russian / Multipolar');
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ source: 't.me/ch', lean: 'Pro-Russian / Multipolar', link: 'https://t.me/ch/1' });
+describe('recentPosts', () => {
+  const now = Date.parse('2026-09-17T12:00:00Z');
+
+  /* A dead channel's page still lists its last posts. OSINTtechnical's were
+     from June 2022 and went out as live alerts. */
+  it('leaves out posts older than the live window', () => {
+    const posts = [
+      post('a/1', 'Old post from a channel that stopped posting', '2022-06-27T16:30:37Z'),
+      post('a/2', 'Yesterday', '2026-09-16T12:00:00Z'),
+      post('a/3', 'Just now', '2026-09-17T11:59:00Z'),
+    ];
+    expect(recentPosts(posts, now).map(p => p.id)).toEqual(['a/2', 'a/3']);
   });
 
-  it('drops service notices such as pins and renames', () => {
-    const html = post('Channel pinned a photo', 'tgme_widget_message text_not_supported_wrap service_message js-widget_message')
-      + post('Real report from the ground, with detail');
-    const items = parseTelegramHTML(html, 'ch', 'x');
-    expect(items.map(i => i.title)).toEqual(['Real report from the ground, with detail']);
+  it('keeps only the newest posts per channel', () => {
+    const posts = Array.from({ length: 12 }, (_, i) => post(`a/${i}`, `Post ${i}`, new Date(now - (12 - i) * 60_000).toISOString()));
+    const kept = recentPosts(posts, now);
+    expect(kept).toHaveLength(8);
+    expect(kept.at(-1)?.id).toBe('a/11');
+  });
+});
+
+describe('mergeCrossPosts', () => {
+  const report = 'Explosions reported near the Kherson rail junction after an overnight drone attack';
+
+  it('folds one report posted by several channels into a single story led by the earliest', () => {
+    const posts: ChannelPost[] = [
+      { post: post('b/7', `🇺🇦 ${report} https://t.me/b`, '2026-09-17T10:05:00Z'), channel: channel('b', 'russian') },
+      { post: post('a/3', report, '2026-09-17T10:00:00Z'), channel: channel('a') },
+      { post: post('c/9', 'An unrelated report about a naval exercise in the Baltic Sea today', '2026-09-17T10:01:00Z'), channel: channel('c') },
+    ];
+    const stories = mergeCrossPosts(posts);
+    expect(stories).toHaveLength(2);
+    const merged = stories.find(s => s.carriedBy.length)!;
+    expect(merged.lead.post.id).toBe('a/3');
+    expect(merged.carriedBy.map(c => c.post.id)).toEqual(['b/7']);
+  });
+
+  it('does not count a channel repeating its own post as a second channel', () => {
+    const stories = mergeCrossPosts([
+      { post: post('a/1', report, '2026-09-17T10:00:00Z'), channel: channel('a') },
+      { post: post('a/2', report, '2026-09-17T11:00:00Z'), channel: channel('a') },
+    ]);
+    expect(stories).toHaveLength(1);
+    expect(stories[0].carriedBy).toEqual([]);
+  });
+
+  it('never merges short posts, which are too generic to match reliably', () => {
+    const stories = mergeCrossPosts([
+      { post: post('a/1', 'Map update', '2026-09-17T10:00:00Z'), channel: channel('a') },
+      { post: post('b/1', 'Map update', '2026-09-17T10:00:00Z'), channel: channel('b') },
+    ]);
+    expect(stories).toHaveLength(2);
   });
 });
