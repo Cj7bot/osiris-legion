@@ -18,6 +18,7 @@ const ALLOWED_HOSTS = [
   'stream.inmoves.nl',
   'thb.gov.tw',
   'etraffic.dgt.es',
+  'eismoinfo.lt',
 ];
 
 // Taiwan Highway Bureau cameras are DigiEver encoders, and they emit a

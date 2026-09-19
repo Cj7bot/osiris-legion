@@ -50,6 +50,23 @@ const REGIONS: Record<string, { bounds: Bounds; cap: number }> = {
   westasia: { bounds: { minLat: 5, maxLat: 56, minLng: 25, maxLng: 92 }, cap: 600 },
 };
 
+/**
+ * Hosts another module already fetches in full. The westasia box reaches west
+ * to 25°E, which takes in eastern Lithuania, and OpenCCTV republishes Via
+ * Lietuva's cameras — so without this each one lands on the map twice: once
+ * here, and once from lithuania.ts, which carries the whole live set.
+ */
+const COVERED_ELSEWHERE = ['eismoinfo.lt'];
+
+function coveredElsewhere(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return COVERED_ELSEWHERE.some(h => host === h || host.endsWith('.' + h));
+  } catch {
+    return false;
+  }
+}
+
 /** The index, as three parallel arrays. */
 interface MarkerIndex {
   ids?: string[];
@@ -91,6 +108,7 @@ export function mapRecord(rec: OpenCctvRecord): CctvCamera | null {
 
   const url = rec.feed_url?.trim();
   if (!url) return null;
+  if (coveredElsewhere(url)) return null;
 
   const kind = streamKind(rec.feed_type);
   if (!kind) return null;

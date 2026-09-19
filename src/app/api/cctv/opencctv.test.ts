@@ -72,6 +72,15 @@ describe('mapRecord', () => {
     expect(mapRecord({ ...sampleRow, id: undefined })).toBeNull();
   });
 
+  it('leaves Via Lietuva cameras to lithuania.ts, so none lands twice', () => {
+    expect(mapRecord({
+      ...sampleRow,
+      id: 'eismoinfo-1072',
+      feed_type: 'image',
+      feed_url: 'https://eismoinfo.lt/eismoinfo-backend/image-provider/camera/last?id=1072',
+    })).toBeNull();
+  });
+
   it('falls back through name, city, then a placeholder', () => {
     expect(mapRecord({ ...sampleRow, name: null })?.name).toBe('Seoul');
     expect(mapRecord({ ...sampleRow, name: null, city: null })?.name).toBe('Camera');
