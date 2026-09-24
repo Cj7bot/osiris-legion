@@ -1,8 +1,8 @@
 <div align="center">
 
-# ⬡ OSIRIS
+# ⬡ OSIRIS - LEGION
 
-### Open Source Intelligence & Reconnaissance Integrated System
+### A fork from the Open Source Intelligence & Reconnaissance Integrated System
 
 [![Live Demo](https://img.shields.io/badge/osirisai.live-00E5FF?style=for-the-badge&logo=vercel&logoColor=white)](https://osirislive.app)
 [![Support OSIRIS](https://img.shields.io/badge/Support_Project-Patreon-FF424D?style=for-the-badge&logo=patreon&logoColor=white)](https://www.patreon.com/posts/159077425)
