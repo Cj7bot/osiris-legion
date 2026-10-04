@@ -14,6 +14,8 @@ import {
 import { ipToNumber, numberToIp, calculateSubnetStart, classifyDevice, assessRisk, batchFetch, ShodanInternetDBResponse, SweepDevice } from '@/lib/osint-utils';
 import ChainBrief from '@/components/ChainBrief';
 import FingerprintSearch, { useFingerprintSearch } from '@/components/FingerprintSearch';
+import DonBotScan from '@/components/DonBotScan';
+import DigitalDonMark from '@/components/DigitalDonMark';
 
 /**
  * Tool groups. At 19 modules a flat grid forces 8px truncated labels
@@ -25,7 +27,7 @@ const GROUPS = [
   { id: 'domain', label: 'DOMAIN & WEB', hint: 'DNS, certificates, site fingerprinting' },
   { id: 'identity', label: 'IDENTITY', hint: 'People, handles, accounts' },
   { id: 'threat', label: 'THREAT & EXPOSURE', hint: 'Reputation and breach data' },
-  { id: 'chain', label: 'BLOCKCHAIN', hint: 'Wallets and on-chain incidents' },
+  { id: 'chain', label: 'BLOCKCHAIN', hint: 'Wallets, tokens and on-chain incidents' },
 ] as const;
 
 type GroupId = (typeof GROUPS)[number]['id'];
@@ -66,6 +68,8 @@ const TABS: ToolDef[] = [
   { id: 'leaks', label: 'DATA LEAKS', icon: ShieldAlert, placeholder: 'Email address', color: '#E040FB', group: 'threat', blurb: 'Breach exposure for an address' },
 
   { id: 'crypto', label: 'CHAIN INTEL', icon: Bitcoin, placeholder: 'BTC, ETH or SOL wallet address', color: '#F7931A', group: 'chain', blurb: 'Wallet forensics and daily brief' },
+  // DigitalDon's own mark, kept monochrome by their brand rule.
+  { id: 'donbot', label: 'DONBOT', icon: DigitalDonMark, placeholder: 'Ticker, name or contract address', color: '#E8E6E0', group: 'chain', blurb: 'Token signal and holder clusters' },
 ];
 
 interface OsintPanelProps { isOpen?: boolean; onClose?: () => void; isMobile?: boolean; onSweepVisualize?: (data: any) => void; onScanGeolocate?: (target: string, data: any) => void; }
@@ -91,6 +95,8 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
   const [toolFilter, setToolFilter] = useState('');
   // Owned here, not by the view: toggling the expanded view remounts it.
   const fingerprint = useFingerprintSearch();
+  /** DonBot's open token, kept for the same reason; its frame reloads on the remount, on the same token. */
+  const [donbotQuery, setDonbotQuery] = useState<string | null>(null);
 
   const selectTool = useCallback((id: string) => {
     setActiveTab(id);
@@ -1232,8 +1238,11 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
       {/* FINGERPRINT brings its own search bar, results and history. */}
       {activeTab === 'fingerprint' && <FingerprintSearch fp={fingerprint} isFullScreen={isFullScreen} />}
 
+      {/* So does DONBOT — the same scan as Markets → Crypto, sealed in its own frame. */}
+      {activeTab === 'donbot' && <DonBotScan initial={donbotQuery} onScan={setDonbotQuery} />}
+
       {/* Input Area */}
-      {activeTab !== 'fingerprint' && (
+      {activeTab !== 'fingerprint' && activeTab !== 'donbot' && (
       <div className="flex flex-col gap-1.5">
         {/* CHAIN INTEL view switch — the brief takes no target. */}
         {activeTab === 'crypto' && (
@@ -1534,7 +1543,7 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
         </div>
       )}
 
-      {history.length > 0 && !results && activeTab !== 'fingerprint' && (
+      {history.length > 0 && !results && activeTab !== 'fingerprint' && activeTab !== 'donbot' && (
         <div className="space-y-1">
           <span className="text-[10px] font-mono tracking-widest text-[var(--text-muted)]">RECENT SCANS</span>
           {history.slice(0, 5).map((h, i) => (

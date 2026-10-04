@@ -12,12 +12,14 @@ export const metadata: Metadata = {
  * Every claim on this page is drawn from the code in this repository, not from
  * a template. When a data flow changes, this page changes with it.
  *
- * Reviewed 2026-09-17 against: src/app/api/geo, src/app/api/osint/*,
- * src/app/api/ai/*, src/app/page.tsx, src/components/LiveAlerts.tsx.
+ * Reviewed 2026-10-02 against: src/app/api/geo, src/app/api/osint/*,
+ * src/app/api/ai/*, src/app/page.tsx, src/components/LiveAlerts.tsx,
+ * src/components/DonBotScan.tsx, src/lib/live-clouds.ts, src/lib/oi/*,
+ * src/app/api/geosearch, src/components/oi/assist/voice.ts.
  */
 
 const SERVICES: { service: string; sent: string; when: string }[] = [
-  { service: 'ipapi.co, freeipapi.com, ip-api.com', sent: 'Your apparent IP address', when: 'Three seconds after the dashboard loads, to centre the map near you' },
+  { service: 'ipapi.co, freeipapi.com, ip-api.com', sent: 'Your apparent IP address', when: 'As the dashboard loads, to fly the map to your city' },
   { service: 'api.xposedornot.com', sent: 'The email address you search', when: 'Breach lookups' },
   { service: 'cavalier.hudsonrock.com', sent: 'The email or domain you search', when: 'Infostealer lookups' },
   { service: 'internetdb.shodan.io, stat.ripe.net, rdap.org, dns.google', sent: 'The host, IP or domain you search', when: 'Infrastructure lookups' },
@@ -26,6 +28,12 @@ const SERVICES: { service: string; sent: string; when: string }[] = [
   { service: 'otx.alienvault.com, cve.circl.lu, cveawg.mitre.org', sent: 'The indicator or CVE you search', when: 'Threat and vulnerability lookups' },
   { service: 'Google Gemini', sent: 'The feed context you submit for analysis, including Live Alerts headlines', when: 'AI briefing, analysis and overview requests, when the instance has a Gemini key' },
   { service: 'Telegram (cdn*.telesco.pe)', sent: 'Your IP address, as with any image request', when: 'When you expand a Live Alert that has a photo or video preview' },
+  { service: 'NOAA nowCOAST (nowcoast.noaa.gov)', sent: 'Your IP address and the part of the map in view, as with any map tile', when: 'Only while the Live Clouds layer is switched on' },
+  { service: 'DigitalDon (widget.digitaldon.net)', sent: 'The token you search, and your IP address, as with any page you open. No referrer or site name is sent', when: 'Only when you run a DonBot token scan, in Markets → Crypto or RECON → DonBot. Its page runs sealed in its own frame, and counts its own usage there' },
+  { service: 'The AI provider you choose for OI (OpenAI, Anthropic, Google, OpenRouter, Groq, DeepSeek, xAI, Mistral or Alibaba Cloud)', sent: 'Your API key; for a forecast, your question and any data you add (pasted text, or the text of files you attach, read in your browser), with the OSIRIS headlines picked for it; for OI Assist, the conversation, where the map is looking, which layers are on, and what OI found on the map for you. Sent from the OSIRIS server, not your browser, so the provider sees our address, not yours', when: 'Only when you run an OI forecast, talk to OI Assist, check a key, or question the panel, on the key you supplied' },
+  { service: 'GDELT (api.gdeltproject.org), Wikipedia (en.wikipedia.org) and the news sites they point to', sent: 'A few search keywords drawn from your forecast question, and requests for the articles found. Sent from the OSIRIS server, not your browser', when: 'When you run an OI forecast with research and live intelligence switched on' },
+  { service: 'photon.komoot.io, nominatim.openstreetmap.org', sent: 'The place name searched. Sent from the OSIRIS server, not your browser', when: 'When you search for a place, or OI Assist looks one up to take you there' },
+  { service: 'Your browser\u2019s speech recognition (in Chrome and Edge, a Google or Microsoft service)', sent: 'Your voice, while the microphone is on. OSIRIS never receives the audio, only the words it becomes, which you then send to OI', when: 'Only when you press the microphone in OI Assist. Firefox has no speech recognition, so the button does not show there' },
 ];
 
 export default function PrivacyPage() {
@@ -104,6 +112,22 @@ export default function PrivacyPage() {
             request carries. Do not paste confidential source material into them. A briefing is a
             language model&apos;s summary of its input: fluent prose is not verification, and the
             claims inside still need checking against the underlying feeds.
+          </p>
+          <p className="mt-3 text-sm leading-relaxed text-[var(--text-muted)]">
+            OI runs on your own key. It stays in your browser (only this tab, unless you ask
+            to be remembered on the device) and goes to OSIRIS in a request header when you start a
+            run, check a key or question the panel. The server passes it to the provider you chose
+            for that request and holds it only while your run is going: it is not written to disk,
+            logged or shown back. A run itself is not private: anyone with its link can watch it,
+            and it is kept in memory for three hours after it ends. Its forecast is a simulation by
+            language models, not a prediction anyone stands behind.
+          </p>
+          <p className="mt-3 text-sm leading-relaxed text-[var(--text-muted)]">
+            OI Assist keeps the conversation in your browser tab, and only for as long as the tab is
+            open. Each time it thinks, the conversation so far goes to OSIRIS and on to your provider;
+            the server does not keep it. What OI does on the map (where it flies, which layers it
+            switches, what it marks) happens in your browser. Replies read aloud use your
+            browser&apos;s own voice, on your device.
           </p>
         </section>
 

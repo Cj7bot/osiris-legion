@@ -1,0 +1,304 @@
+import { describe, it, expect } from 'vitest';
+import { DEPTHS, askRun, estimateCalls, mapLimit, panelFor, runEngine, type EngineDeps } from './engine';
+import { PANEL_SEED_MAX, SEED_MAX, seedCost } from './depths';
+import { createDemoChat } from './demo';
+import { ProviderError, type ChatFn } from './providers';
+import { applyEvent, initialState, type RunState } from './state';
+import type { Agent, ContextItem, OiEvent, Post } from './types';
+
+/** What the research finds: articles with their links and what they say, and background. */
+const WEB: ContextItem[] = [
+  { id: 'w1', kind: 'web', title: 'Envoys close in on framework text', source: 'Wire Daily', published: '2026-10-01T08:00:00Z', place: 'Switzerland', lat: null, lng: null, url: 'https://wire.example/envoys', excerpt: 'Negotiators said seven of nine chapters of the framework are agreed, with verification still open.' },
+  { id: 'w2', kind: 'web', title: 'Sanctions row threatens talks', source: 'Policy Post', published: '2026-09-30T08:00:00Z', place: '', lat: null, lng: null, url: 'https://policy.example/row', excerpt: 'A new sanctions package has angered one delegation, which threatened to walk out of the Geneva round.' },
+  { id: 'b1', kind: 'wiki', title: 'Framework agreement', source: 'Wikipedia', published: '', place: '', lat: null, lng: null, url: 'https://en.wikipedia.org/wiki/Framework_agreement', excerpt: 'A framework agreement sets out the terms under which later agreements are made.' },
+];
+
+const CONTEXT: ContextItem[] = [
+  { id: 'c1', kind: 'news', title: 'Envoys due in Geneva', source: 'Wire', published: '2026-10-02T09:00:00Z', place: 'Geneva', lat: 46.2, lng: 6.14 },
+  { id: 'c2', kind: 'news', title: 'New export controls floated', source: 'Wire', published: '2026-10-02T08:00:00Z', place: 'Washington', lat: 38.9, lng: -77 },
+];
+
+function harness(chat: ChatFn, injects: string[][] = []) {
+  const events: OiEvent[] = [];
+  const prompts: string[] = [];
+  const recording: ChatFn = req => { prompts.push(req.user); return chat(req); };
+  const deps: EngineDeps = {
+    chat: recording,
+    concurrency: 3,
+    emit: e => events.push(e),
+    signal: new AbortController().signal,
+    takeInjects: () => injects.shift() ?? [],
+    gather: async () => CONTEXT,
+    research: async () => WEB,
+    today: '2026-10-02',
+  };
+  return { events, prompts, deps };
+}
+
+const fold = (events: OiEvent[]): RunState =>
+  events.reduce((s, e, seq) => applyEvent(s, { ...e, seq, at: seq } as never), initialState());
+
+describe('runEngine', () => {
+  it('runs every stage and draws the analysis as it goes', async () => {
+    const h = harness(createDemoChat());
+    await runEngine({ question: 'Will the envoys sign a framework deal by year end?', seed: '', depth: 'quick', useFeeds: true }, h.deps);
+
+    const phases = h.events.filter(e => e.t === 'phase').map(e => (e as { phase: string }).phase);
+    expect(phases).toEqual(['context', 'graph', 'agents', 'simulate', 'simulate', 'report']);
+
+    const s = fold(h.events);
+    const d = DEPTHS.quick;
+    // The research comes first: articles and background with their links, then the live feeds.
+    expect(s.context.map(c => c.id)).toEqual(['w1', 'w2', 'b1', 'c1', 'c2']);
+    expect(h.prompts[0]).toContain('Plan the research');
+    // The panel is anonymous: Agent 1, Agent 2…, each known by a role.
+    expect(s.agents.map(a => a.name)).toEqual(Array.from({ length: DEPTHS.quick.agents }, (_, i) => `Agent ${i + 1}`));
+    expect(s.agents.every(a => a.id === `agent_${a.name.slice(6)}` && a.role.length > 3)).toBe(true);
+    // Every quote is attributed: which way it pushed the panelist, and why; the research is quoted before the headlines.
+    const cites = s.posts.flatMap(p => p.cites ?? []);
+    expect(cites.every(c => c.push && c.why)).toBe(true);
+    expect(cites.every(c => /^[wb]/.test(c.source))).toBe(true);
+    expect(s.frame?.proposition).toContain('envoys');
+    expect(s.actors.length).toBeGreaterThan(5);
+    expect(s.agents).toHaveLength(d.agents);
+    expect(s.posts).toHaveLength(d.agents * d.rounds);
+    expect(s.rounds.map(r => r.round)).toEqual([1, 2]);
+    const kinds = new Set(s.links.map(l => l.kind));
+    expect(kinds).toEqual(new Set(['relation', 'evidence', 'focus', 'reply', 'cite']));
+    // Every turn quotes the feed, word for word, and each quote is a thread to its source; none needed sending back.
+    expect(s.posts.every(p => (p.cites?.length ?? 0) > 0 && p.cites!.every(c => c.exact))).toBe(true);
+    expect(s.links.filter(l => l.kind === 'cite' && l.from.startsWith('g:')).length).toBe(s.posts.reduce((n, p) => n + p.cites!.length, 0));
+    // The report's drivers name their sources, and the report joins the graph by them.
+    expect(s.report?.drivers.every(d => (d.sources?.length ?? 0) > 0)).toBe(true);
+    expect(s.links.some(l => l.kind === 'cite' && l.from === 'r:report')).toBe(true);
+    expect(s.report?.probability).toBeCloseTo(s.rounds[1].consensus, 1);
+    expect(s.usage.calls).toBe(estimateCalls('quick'));
+    expect(h.prompts.length).toBe(estimateCalls('quick'));
+  });
+
+  it('forecasts a choice between outcomes as shares', async () => {
+    const h = harness(createDemoChat());
+    await runEngine({ question: 'Who will win the runoff in December?', seed: '', depth: 'quick', useFeeds: false }, h.deps);
+    const s = fold(h.events);
+    expect(s.frame?.kind).toBe('choice');
+    expect(s.frame?.outcomes.length).toBeGreaterThanOrEqual(2);
+    expect(s.posts.every(p => p.shares?.length === s.frame!.outcomes.length)).toBe(true);
+    expect(s.rounds.every(r => r.shares && Math.abs(r.shares.reduce((t, v) => t + v, 0) - 1) < 0.01)).toBe(true);
+    expect(s.report?.shares?.length).toBe(s.frame!.outcomes.length);
+    expect(s.report?.answer).toMatch(/^Front-runner \(\d+%\)$/);
+    expect(h.prompts.find(p => p.includes('This is round'))).toContain('OUTCOMES: 1. Front-runner');
+  });
+
+  it('forecasts a quantity as an estimate with a range', async () => {
+    const h = harness(createDemoChat());
+    await runEngine({ question: 'How much will Brent crude cost on 31 December?', seed: '', depth: 'quick', useFeeds: false }, h.deps);
+    const s = fold(h.events);
+    expect(s.frame).toMatchObject({ kind: 'number', unit: 'USD per barrel', anchor: 84.2 });
+    expect(s.posts.every(p => p.estimate && p.estimate.low <= p.estimate.value && p.estimate.value <= p.estimate.high)).toBe(true);
+    expect(s.rounds.every(r => r.value && Number.isFinite(r.value.median))).toBe(true);
+    expect(s.report?.estimate?.value).toBeCloseTo(s.rounds[1].value!.median, 1);
+    expect(s.report?.answer).toMatch(/USD per barrel \(/);
+    expect(h.prompts.find(p => p.includes('This is round'))).toContain('"estimate": number');
+  });
+
+  it('feeds live context into the world model and the panel', async () => {
+    const h = harness(createDemoChat());
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: 'Leaked draft text.', depth: 'quick', useFeeds: true }, h.deps);
+    const world = h.prompts.find(p => p.includes('Build the world model'))!;
+    expect(world).toContain('[c1]');
+    expect(world).toContain('[w1]');
+    // An article's excerpt goes in with it, so the panel can quote what it says.
+    expect(world).toContain('seven of nine chapters of the framework are agreed');
+    expect(world).toContain('Leaked draft text.');
+    expect(h.prompts.find(p => p.includes('This is round'))).toContain('Envoys due in Geneva');
+  });
+
+  it('lifts passages of the asker data for the panel to quote; the whole of it only when the whole panel reads it', async () => {
+    const brief = harness(createDemoChat());
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: 'Our channel check: 7 of 9 delegations ready.\nThe hosts expect a signing in November.', depth: 'quick', useFeeds: false }, brief.deps);
+    const b = fold(brief.events);
+    // The world model's passages became sources d1, d2, and the panel quoted them.
+    expect(b.context.map(c => c.id)).toEqual(['d1', 'd2']);
+    expect(b.context[0]).toMatchObject({ kind: 'data', title: 'Our channel check: 7 of 9 delegations ready.' });
+    expect(b.posts.every(p => p.cites?.some(c => c.source.startsWith('d') && c.exact))).toBe(true);
+    // The data itself stays with the world model.
+    expect(brief.prompts.filter(p => p.includes('SEED [data]'))).toHaveLength(0);
+
+    const panel = harness(createDemoChat());
+    const seed = `Our channel check: 7 of 9 delegations ready.${' More rows.'.repeat(2_000)}`;
+    await runEngine({ question: 'Will the envoys sign a deal?', seed, seedScope: 'panel', depth: 'quick', useFeeds: false }, panel.deps);
+    const turns = panel.prompts.filter(p => p.includes('This is round'));
+    expect(turns.length).toBeGreaterThan(0);
+    expect(turns.every(p => p.includes('7 of 9 delegations'))).toBe(true);
+    expect(panel.prompts[panel.prompts.length - 1]).toContain('7 of 9 delegations');
+    // Every turn reads the head of the data, not all of it.
+    expect(turns[0].length).toBeLessThan(seed.length);
+    expect(fold(panel.events).report).not.toBeNull();
+  });
+
+  it('sends a post that quotes nothing back once, and keeps it as it is if it still quotes nothing', async () => {
+    const demo = createDemoChat();
+    // A model that leaves out its quotes: on the first ask only, or always.
+    const forgetful = (always: boolean): ChatFn => async req => {
+      const out = await demo(req);
+      if (!req.user.includes('This is round') || (!always && req.user.includes('quoted no source'))) return out;
+      const j = JSON.parse(out.text);
+      delete j.cites;
+      return { ...out, text: JSON.stringify(j) };
+    };
+    const d = DEPTHS.quick;
+    const turns = d.agents * d.rounds;
+
+    const once = harness(forgetful(false));
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: true }, once.deps);
+    const s1 = fold(once.events);
+    expect(s1.posts.every(p => (p.cites?.length ?? 0) > 0)).toBe(true);
+    expect(s1.usage.calls).toBe(estimateCalls('quick') + turns);
+
+    const never = harness(forgetful(true));
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: true }, never.deps);
+    const s2 = fold(never.events);
+    expect(s2.posts).toHaveLength(turns);
+    expect(s2.posts.every(p => p.cites?.length === 0)).toBe(true);
+    expect(s2.usage.calls).toBe(estimateCalls('quick') + turns);
+  });
+
+  it('asks for no quotes when there is nothing to quote', async () => {
+    const h = harness(createDemoChat());
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: false }, h.deps);
+    expect(h.prompts.filter(p => p.includes('This is round')).every(p => !p.includes('"cites"'))).toBe(true);
+    // Without the live feeds there is no research either, so no research plan.
+    expect(fold(h.events).usage.calls).toBe(estimateCalls('quick', false));
+  });
+
+  it('leaves out the feed headlines about something else once the research has found coverage', async () => {
+    const h = harness(createDemoChat());
+    const covered = [...WEB, { ...WEB[0], id: 'w3', title: 'Envoys to sign within weeks, hosts say', url: 'https://wire.example/sign' }];
+    h.deps.research = async () => covered.map(c => ({ ...c, kind: c.id.startsWith('b') ? 'wiki' as const : 'web' as const }));
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: true }, h.deps);
+    const ids = fold(h.events).context.map(c => `${c.id}:${c.title}`);
+    // "Envoys due in Geneva" names the envoys; "New export controls floated" does not, and goes.
+    expect(ids.filter(x => x.startsWith('c'))).toEqual(['c1:Envoys due in Geneva']);
+  });
+
+  it('puts an injected event in front of the panel from the next round on, and in the report', async () => {
+    const h = harness(createDemoChat(), [[], ['A ceasefire is announced in Geneva']]);
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: false }, h.deps);
+    const round1 = h.prompts.filter(p => p.includes('This is round 1'));
+    const round2 = h.prompts.filter(p => p.includes('This is round 2'));
+    expect(round1.every(p => !p.includes('ceasefire'))).toBe(true);
+    expect(round2.every(p => p.includes('A ceasefire is announced in Geneva'))).toBe(true);
+    expect(h.prompts[h.prompts.length - 1]).toContain('A ceasefire is announced in Geneva');
+    expect(fold(h.events).injects).toEqual([{ text: 'A ceasefire is announced in Geneva', round: 2 }]);
+  });
+
+  it('lets a panelist sit out a round when their call fails', async () => {
+    const demo = createDemoChat();
+    let failed = 0;
+    const flaky: ChatFn = async req => {
+      if (req.user.includes('This is round 1') && failed++ === 0) throw new ProviderError('upstream', 'boom');
+      return demo(req);
+    };
+    const h = harness(flaky);
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: false }, h.deps);
+    const s = fold(h.events);
+    expect(s.warnings.join(' ')).toMatch(/sat out round 1/);
+    expect(s.rounds[0].n).toBe(DEPTHS.quick.agents - 1);
+    expect(s.report).not.toBeNull();
+  });
+
+  it('stops everything on a rejected key', async () => {
+    let calls = 0;
+    const h = harness(async () => { calls++; throw new ProviderError('auth', 'OpenAI rejected the key'); });
+    await expect(runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'deep', useFeeds: false }, h.deps)).rejects.toThrow(/rejected the key/);
+    expect(calls).toBe(1);
+  });
+
+  it('gives up when most of the panel cannot answer', async () => {
+    const demo = createDemoChat();
+    const h = harness(async req => {
+      if (req.user.includes('This is round')) throw new ProviderError('upstream', 'overloaded');
+      return demo(req);
+    });
+    await expect(runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: false }, h.deps)).rejects.toThrow(/Most of the panel/);
+  });
+
+  it('retries a reply that does not parse, once', async () => {
+    const demo = createDemoChat();
+    let garbled = 0;
+    const h = harness(async req => {
+      if (req.user.includes('Build the world model') && garbled++ === 0) return { text: 'I think the answer is complicated.', input: 1, output: 1 };
+      return demo(req);
+    });
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: false }, h.deps);
+    expect(h.prompts[1]).toContain('could not be parsed');
+  });
+
+  it('stops when cancelled', async () => {
+    const ac = new AbortController();
+    const demo = createDemoChat();
+    const h = harness(async req => {
+      if (req.user.includes('This is round')) ac.abort(new Error('cancelled'));
+      return demo(req);
+    });
+    h.deps.signal = ac.signal;
+    await expect(runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: false }, h.deps)).rejects.toThrow('cancelled');
+    expect(fold(h.events).report).toBeNull();
+  });
+});
+
+describe('panelFor', () => {
+  const agent = (id: string): Agent => ({ id, name: id, role: '', lens: '', bias: '', prior: 0.5, watches: [], place: '', lat: null, lng: null });
+  const post = (a: string, p: number, c: number, to: string[] = []): Post => ({
+    id: a, agent: a, round: 1, probability: p, confidence: c, text: '', reasoning: '', changed: '', focus: [],
+    replies: to.map(t => ({ to: t, stance: 'disagree' as const, point: '' })),
+  });
+
+  it('shows replies first, then both ends of the range, then confidence', () => {
+    const agents = new Map(['me', 'a', 'b', 'c', 'd'].map(id => [id, agent(id)]));
+    const prev = [post('me', 0.5, 1), post('a', 0.5, 0.9), post('b', 0.1, 0.1), post('c', 0.9, 0.2), post('d', 0.5, 0.3, ['me'])];
+    expect(panelFor(agents.get('me')!, prev, agents, 4).map(x => x.agent.id)).toEqual(['d', 'b', 'c', 'a']);
+  });
+});
+
+describe('askRun', () => {
+  it('talks to the report agent and to a panelist, on the run they were in', async () => {
+    const h = harness(createDemoChat());
+    await runEngine({ question: 'Will the envoys sign a deal?', seed: '', depth: 'quick', useFeeds: false }, h.deps);
+    const s = fold(h.events);
+    const seen: string[] = [];
+    const chat: ChatFn = async req => { seen.push(req.user); return { text: 'Because.', input: 1, output: 1 }; };
+    expect((await askRun(s, 'report', 'Why so low?', chat)).reply).toBe('Because.');
+    expect(seen[0]).toContain(s.report!.headline);
+    await askRun(s, s.agents[0].id, 'What would change your mind?', chat);
+    expect(seen[1]).toContain(`You are ${s.agents[0].name}`);
+    await expect(askRun(s, 'nobody', 'hi', chat)).rejects.toThrow(/No panelist/);
+  });
+});
+
+describe('mapLimit', () => {
+  it('never runs more than the limit at once', async () => {
+    let live = 0;
+    let peak = 0;
+    const out = await mapLimit([1, 2, 3, 4, 5, 6, 7], 3, async n => {
+      peak = Math.max(peak, ++live);
+      await new Promise(r => setTimeout(r, 5));
+      live--;
+      return n * 2;
+    });
+    expect(out).toEqual([2, 4, 6, 8, 10, 12, 14]);
+    expect(peak).toBe(3);
+  });
+});
+
+describe('seedCost', () => {
+  it('counts the data once for the brief, and once per read when the whole panel reads it', () => {
+    expect(seedCost(0, 'standard', 'panel')).toEqual({ tokens: 0, calls: 0 });
+    expect(seedCost(4_000, 'standard', 'brief')).toEqual({ tokens: 1_000, calls: 1 });
+    const d = DEPTHS.standard;
+    // 4,000 characters once, then the same again in every turn and the report.
+    expect(seedCost(4_000, 'standard', 'panel')).toEqual({ tokens: 1_000 * (2 + d.agents * d.rounds), calls: 2 + d.agents * d.rounds });
+    // Each panel read is capped at PANEL_SEED_MAX; the whole run at SEED_MAX.
+    expect(seedCost(SEED_MAX * 2, 'quick', 'panel').tokens).toBe(SEED_MAX / 4 + (PANEL_SEED_MAX / 4) * (1 + DEPTHS.quick.agents * DEPTHS.quick.rounds));
+  });
+});

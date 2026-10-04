@@ -13,6 +13,7 @@ const GUIDE_SECTIONS = [
   { id: 'self-hosting', title: 'Self-Hosting' },
   { id: 'configuration', title: 'Configuration' },
   { id: 'interface', title: 'Interface Guide' },
+  { id: 'oi', title: 'OI & MCP' },
   { id: 'shortcuts', title: 'Keyboard Shortcuts' },
 ];
 
@@ -485,6 +486,131 @@ docker compose up -d`}</Pre>
             </div>
           </Section>
 
+          <Section id="oi" eyebrow="Guide" title="OI & MCP">
+            <p>
+              OI is the AI in OSIRIS, on your own model key, and it works two ways. <strong>Assist</strong> is a
+              conversation (press <kbd>O</kbd>): ask in words, typed or spoken, and OI works the map for you. It flies
+              to the place you name, switches the layers on, searches what is live (flights, military aircraft, ships,
+              ports and chokepoints, earthquakes, fires, weather, disaster alerts, news, cameras, satellites), marks
+              what it finds in cyan with the area it searched, and lists it in cards you can click through. It reads the
+              markets, opens panels, and starts forecasts. Each step shows what it did as it does it; choose Navigate,
+              Research or Forecast to steer it, or leave it on Auto.
+            </p>
+            <p>
+              <strong>Forecast</strong> is OSIRIS&apos;s prediction engine. Ask it a question and it builds a world model from the
+              live feeds (the actors, where they are, how they relate), assembles a deliberately diverse panel of
+              simulated forecasters, and lets them debate over several rounds: each one gives a view, replies to the
+              others, and updates. A report agent then writes a calibrated forecast with its drivers, scenarios,
+              signposts to watch and the strongest dissent. The answer takes the shape the question asks for: a
+              probability for a yes-or-no question, a share for each outcome when it asks which of several will happen,
+              and an estimate with an 80% range when it asks how much. While it thinks, the analysis draws itself on the
+              globe as arcs through the sky; every arc and point can be clicked to open exactly that piece of the
+              research, and the camera follows the run until you take it.
+            </p>
+            <div className="grid sm:grid-cols-2 gap-2.5">
+              {[
+                { k: 'Your own key', v: 'OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, DeepSeek, xAI, Mistral or Qwen. The key stays in your browser and travels in a header with your requests; the server uses it for your run and never stores or logs it.' },
+                { k: 'Cost', v: 'Quick: 6 agents × 2 rounds, about 16 model calls. Standard: 10 × 3, about 34. Deep: 16 × 4, about 68. Billed by your provider at its own rates.' },
+                { k: 'Sharing', v: 'Every run has a link, /?oi=<id>, that replays the whole analysis on the globe for anyone who opens it. Runs are kept for three hours after they finish.' },
+                { k: 'Steering', v: 'Whoever started a run holds its token: they alone can inject events into it or stop it. Anyone with a key can question the panel.' },
+                { k: 'On the globe', v: 'Violet arcs are alignments and agreements, magenta are rivalries and disputes, indigo is everything in between; evidence from the feeds is a paler wash of its tone, and marching dashes are a panelist weighing an actor. All three colours are yours to set in the Style Studio (Map layers → OI).' },
+                { k: 'Workspace', v: 'Full screen (the expand button, with or without a forecast) opens the OI workspace. On the left, the same Forecast / Assist switch as the panel: the ask form, then the verdict with the report or the execution trace (every step the engine took, timed, with what it produced); or the conversation. In the middle, four views on keys 1 to 4: the live globe; the research graph, after MiroFish, with every actor, panelist and cited source and every link between them, filters and a flow layout; the timeline, each panelist round by round under the pooled view; and sortable tables of every object. On the right, once there is a run, whatever is selected, as an object with its properties and links. Ctrl+K (⌘K) finds any object by name, and in Assist OI can open the workspace, switch its view and open objects for you.' },
+                { k: 'Research', v: 'Before the world model, OI researches the question: recent news found for it (from GDELT and Wikipedia’s Current events, each with its link and, where the publisher serves it, what the article says), Wikipedia background, and the OSIRIS feeds. The panel is anonymous: Agent 1, Agent 2 and so on, each known by a role, never a made-up name.' },
+                { k: 'Sources', v: 'Every panelist backs each post with quotes from numbered sources: the research’s articles and background, items of the live feed, or passages the world model lifts word for word from your own data. Each quote says which way it moved that panelist’s number and why, and links to where it was published; the report shows the evidence that carried the panel, source by source. Each quote is checked against its source and marked verbatim or paraphrase; a post that quotes nothing is sent back once. In the research graph every quote is a dotted thread from the panelist to its source, and the report joins at the end with a thread to each source its drivers rest on, so any conclusion can be followed back to the words it came from.' },
+                { k: 'Answers', v: 'Every run says what kind it is (binary, choice or number) and gives its answer in words, e.g. "62% YES", "Hold (55%)" or "86.4 USD per barrel (80–92)", alongside the figures.' },
+              ].map(row => (
+                <div key={row.k} className="rounded-xl border border-white/[0.07] bg-white/[0.015] p-3.5">
+                  <div className="font-mono text-[11.5px] text-[#B388FF] mb-1.5">{row.k}</div>
+                  <div className="text-[12.5px] leading-[1.7] text-[var(--text-secondary)]">{row.v}</div>
+                </div>
+              ))}
+            </div>
+
+            <p className="pt-2">From code, start a run, then follow it over Server-Sent Events or wait for it:</p>
+            <CodeBlock
+              label="Forecast over the REST API"
+              tabs={[
+                {
+                  label: 'cURL',
+                  lang: 'bash',
+                  code: `# Start: answers 202 with the run id, a watch link and a run token
+curl -s -X POST ${origin}/api/oi/runs \\
+  -H "Content-Type: application/json" \\
+  -H "X-OI-Provider: openai" \\
+  -H "X-OI-Key: $OPENAI_API_KEY" \\
+  -d '{"question": "Will the Fed cut rates at its next meeting?", "depth": "quick"}'
+
+# Wait up to 55 s for the forecast (repeat until status is "done")
+curl -s "${origin}/api/oi/runs/RUN_ID?wait=55"
+
+# Or watch it happen
+curl -N ${origin}/api/oi/runs/RUN_ID/events`,
+                },
+              ]}
+            />
+
+            <p>
+              The same engine is an MCP server at <Code>{`${origin}/api/mcp`}</Code> (Streamable HTTP). Give an agent the
+              tools <Code>oi_predict</Code>, <Code>oi_get_run</Code>, <Code>oi_ask</Code>,{' '}
+              <Code>oi_inject</Code> and <Code>oi_cancel</Code>, plus <Code>osiris_world_brief</Code> and{' '}
+              <Code>osiris_markets</Code>, which are free and need no key. The model key is set once on the connection, as
+              headers, so it never appears in the agent&apos;s conversation.
+            </p>
+            <CodeBlock
+              label="Connect an agent"
+              tabs={[
+                {
+                  label: 'Hermes',
+                  lang: 'yaml',
+                  code: `# ~/.hermes/config.yaml
+mcp_servers:
+  osiris:
+    url: "${origin}/api/mcp"
+    headers:
+      X-OI-Provider: "anthropic"
+      X-OI-Key: "sk-ant-..."
+      X-OI-Model: "claude-haiku-4-5-20251001"
+    timeout: 300`,
+                },
+                {
+                  label: 'Claude Code',
+                  lang: 'bash',
+                  code: `claude mcp add --transport http osiris ${origin}/api/mcp \\
+  --header "X-OI-Provider: openai" \\
+  --header "X-OI-Key: $OPENAI_API_KEY"`,
+                },
+                {
+                  label: 'Cursor / JSON',
+                  lang: 'json',
+                  code: `{
+  "mcpServers": {
+    "osiris": {
+      "url": "${origin}/api/mcp",
+      "headers": {
+        "X-OI-Provider": "google",
+        "X-OI-Key": "AIza..."
+      }
+    }
+  }
+}`,
+                },
+              ]}
+            />
+            <Callout tone="info" title="How long a forecast takes">
+              One to five minutes, depending on depth and provider. <Code>oi_predict</Code> waits for it when the
+              client accepts a streamed response, sending progress as each phase and round completes. Over plain JSON it
+              waits about 80 seconds, then returns the run id to poll with <Code>oi_get_run</Code> and{' '}
+              <Code>wait_seconds</Code>.
+            </Callout>
+            <p className="text-[12px] text-[var(--text-muted)]">
+              The method follows{' '}
+              <a href="https://github.com/666ghj/MiroFish" target="_blank" rel="noopener noreferrer" className="underline hover:text-white">MiroFish</a>,
+              the open-source swarm-intelligence engine: seed a parallel world from real material, populate it with agents,
+              let them interact while you inject variables, then hand the simulation to a report agent. OSIRIS rebuilds that
+              method natively for its own feeds and globe; no MiroFish code is used. A simulation, not a guarantee.
+            </p>
+          </Section>
+
           <Section id="shortcuts" eyebrow="Guide" title="Keyboard Shortcuts">
             <p>
               Press <Code>?</Code> at any time inside the application to bring up this list.
@@ -521,7 +647,8 @@ docker compose up -d`}</Pre>
             <p>
               All routes live under <Code>/api</Code> on whatever origin serves the application. Reads are{' '}
               <Code>GET</Code>, writes are <Code>POST</Code> with a JSON body. Nothing requires authentication except{' '}
-              <Code>/api/sdk/ingest</Code> and <Code>/api/github-webhook</Code>.
+              <Code>/api/sdk/ingest</Code> and <Code>/api/github-webhook</Code>. OI runs on a model key you bring,
+              sent in the <Code>X-OI-Key</Code> header.
             </p>
             <div className="space-y-2.5">
               {[

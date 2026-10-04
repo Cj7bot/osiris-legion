@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Layers, BarChart3, Newspaper, Search, X, Globe, MapPinned, Route, Radar, Satellite, Moon, ExternalLink, AlertTriangle, Activity, Database, Wifi, Play, Network, Crosshair, Bluetooth, Pentagon, Radio , PenLine } from 'lucide-react';
+import { Layers, BarChart3, Newspaper, Search, X, Globe, MapPinned, Route, Radar, Satellite, Moon, ExternalLink, AlertTriangle, Activity, Database, Wifi, Play, Network, Crosshair, Bluetooth, Pentagon, Radio , PenLine, Orbit } from 'lucide-react';
 import { type TerrainStatus } from '@/lib/map-terrain';
 import { loadCameraCatalog, mergeCameraCatalog } from '@/lib/camera-catalog';
 import IntelFeed from '@/components/IntelFeed';
@@ -30,6 +30,7 @@ const LayerPanel = dynamic(() => import('@/components/LayerPanel'));
 const SpaceCam = dynamic(() => import('@/components/SpaceCam'), { ssr: false });
 const CameraViewer = dynamic(() => import('@/components/CameraViewer'));
 const OsintPanel = dynamic(() => import('@/components/OsintPanel'));
+const OiPanel = dynamic(() => import('@/components/OiPanel'));
 const DrawingToolbar = dynamic(() => import('@/components/DrawingToolbar'), { ssr: false });
 const DrawHud = dynamic(() => import('@/components/DrawHud'), { ssr: false });
 // The measurement helpers are pure functions — importing them directly keeps
@@ -42,6 +43,16 @@ import { diffSweep, appendEvents, type WatchBaseline, type WatchEvent } from '@/
 import { STORAGE_KEY, serializeShapes, deserializeShapes, shapesToGeoJSON, downloadFile } from '@/lib/aoi-export';
 const TokenPanel = dynamic(() => import('@/components/TokenPanel'));
 import SupportMenu from '@/components/SupportMenu';
+import { useOi } from '@/lib/oi/client';
+import { useAssist } from '@/lib/oi/assist/client';
+import type { Highlight, Site } from '@/lib/oi/assist/tools';
+import { currentAnswer } from '@/lib/oi/state';
+import type { OiMode } from '@/components/OiPanel';
+import { OiMark } from '@/components/oi/atoms';
+import type { Stage } from '@/components/oi/Workspace';
+import { searchObjects, TYPE_LABEL, objectsOf } from '@/lib/oi/objects';
+import { workspaceInsets } from '@/lib/oi/layout';
+import type { OiGlobe, OiHover } from '@/lib/oi/globe';
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -178,6 +189,7 @@ export default function Dashboard() {
   const [showSplash, setShowSplash] = useState(true);
   const [splashStage, setSplashStage] = useState(0);
   const [mapReady, setMapReady] = useState(false);
+
   const revealed = !showSplash;
   /* True once the splash has finished fading out, not merely started to. */
   const [splashGone, setSplashGone] = useState(false);
@@ -190,6 +202,21 @@ export default function Dashboard() {
   const [spaceWeather, setSpaceWeather] = useState<any>(null);
   const [showLayers, setShowLayers] = useState(true);
   const [showMarkets, setShowMarkets] = useState(false);
+  /* The Markets panel is pinned just below the header rather than centred on
+     its rail button. Centred, a tall panel (a chart open, a long list) rose
+     past the top of the window and took its own header and buttons with it. */
+  const marketsAnchor = useRef<HTMLDivElement>(null);
+  const [marketsTop, setMarketsTop] = useState(0);
+  useLayoutEffect(() => {
+    if (!showMarkets) return;
+    const place = () => {
+      const anchor = marketsAnchor.current?.getBoundingClientRect();
+      if (anchor) setMarketsTop(Math.round(64 - anchor.top));
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [showMarkets]);
   const [showAlerts, setShowAlerts] = useState(false);
   const [showSpaceCam, setShowSpaceCam] = useState(false);
   const [showScmPanel, setShowScmPanel] = useState(true);
@@ -295,7 +322,109 @@ export default function Dashboard() {
   const [arcgisLayers, setArcgisLayers] = useState<Array<{ id: string; title: string; url: string; geojson: any; color: string; visible: boolean; opacity: number }>>([]);
   const [mapCenter, setMapCenter] = useState<{ lat: number; lng: number; bounds?: { west: number; south: number; east: number; north: number } } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [mobilePanel, setMobilePanel] = useState<'layers'|'markets'|'intel'|'search'|'recon'|'remote'|null>(null);
+  const [mobilePanel, setMobilePanel] = useState<'layers'|'markets'|'intel'|'search'|'recon'|'remote'|'oi'|null>(null);
+
+  // ── OSIRIS OI ── the run lives here, not in the panel, so the globe keeps
+  // drawing it while the panel is closed. State goes to the map's OI layer
+  // directly rather than through a prop, so the map does not re-render per event.
+  const oi = useOi();
+  const [showOi, setShowOi] = useState(false);
+  const oiAnchor = useRef<HTMLDivElement>(null);
+  const [oiTop, setOiTop] = useState(0);
+  useLayoutEffect(() => {
+    if (!showOi) return;
+    const place = () => {
+      const anchor = oiAnchor.current?.getBoundingClientRect();
+      if (anchor) setOiTop(Math.round(64 - anchor.top));
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [showOi]);
+  /** What is selected on the globe or in the panel: a point's key, or "link:<id>" for an arc. */
+  const [oiSelected, setOiSelected] = useState<string | null>(null);
+  const [oiHover, setOiHover] = useState<OiHover | null>(null);
+  const [oiFollowing, setOiFollowing] = useState(true);
+  const [oiTheater, setOiTheater] = useState(false);
+  /** Assist (talk to OI, the default) or Forecast (the swarm). */
+  const [oiMode, setOiMode] = useState<OiMode>('assist');
+  /** What the full-screen workspace's stage shows. */
+  const [oiStage, setOiStage] = useState<Stage>('globe');
+  /** Whether the panel was opened from the keyboard, to type straight away. */
+  const [oiAutoFocus, setOiAutoFocus] = useState(false);
+  // A different run (or none) starts with nothing selected.
+  const [oiSelectionRun, setOiSelectionRun] = useState(oi.runId);
+  if (oiSelectionRun !== oi.runId) {
+    setOiSelectionRun(oi.runId);
+    setOiSelected(null);
+  }
+  const oiGlobe = useRef<OiGlobe | null>(null);
+  const oiState = useRef(oi.state);
+  const oiSelectedRef = useRef(oiSelected);
+  useEffect(() => {
+    oiState.current = oi.state;
+    oiGlobe.current?.update(oi.state);
+  }, [oi.state]);
+  useEffect(() => {
+    oiSelectedRef.current = oiSelected;
+    oiGlobe.current?.select(oiSelected);
+  }, [oiSelected]);
+  const handleOiGlobe = useCallback((globe: OiGlobe | null) => {
+    oiGlobe.current = globe;
+    globe?.update(oiState.current);
+    globe?.select(oiSelectedRef.current);
+  }, []);
+  // A click on the globe selects, and opens the panel to show what was clicked; empty map clears.
+  const handleOiSelect = useCallback((key: string | null) => {
+    setOiSelected(key);
+    if (!key) return;
+    setOiMode('forecast');
+    if (window.matchMedia('(max-width: 767px)').matches) setMobilePanel('oi');
+    else setShowOi(true);
+  }, []);
+  // Going somewhere on purpose takes the camera off the director.
+  const handleOiLocate = useCallback((lat: number, lng: number, zoom?: number) => {
+    oiGlobe.current?.follow(false);
+    setFlyToLocation({ lat, lng, zoom, ts: Date.now() });
+  }, []);
+  const followOi = useCallback(() => oiGlobe.current?.follow(true), []);
+  // Full screen: the workspace's columns sit either side, and the globe stays centred on the stage between.
+  const oiTheaterOn = oiTheater;
+  const oiHasRun = Boolean(oi.state);
+  // On a phone the drawer covers the lower half: the globe, and anywhere OI flies to, centre in the space above it.
+  const oiDrawerOpen = mobilePanel === 'oi';
+  useEffect(() => {
+    if (!oiDrawerOpen) return;
+    const drawer = Math.round(Math.min(window.innerHeight * 0.55, window.innerHeight - 100)) + 52;
+    oiGlobe.current?.setInsets({ top: 70, bottom: drawer, left: 0, right: 0 });
+    return () => oiGlobe.current?.setInsets(null);
+  }, [oiDrawerOpen]);
+  useEffect(() => {
+    const inset = () => oiGlobe.current?.setInsets(oiTheaterOn ? workspaceInsets(window.innerWidth, oiHasRun) : null);
+    inset();
+    // The app's own HUD (everything marked data-hud) steps back while the workspace has the screen.
+    document.documentElement.toggleAttribute('data-oi-theater', oiTheaterOn);
+    if (oiTheaterOn) window.addEventListener('resize', inset);
+    return () => {
+      window.removeEventListener('resize', inset);
+      document.documentElement.removeAttribute('data-oi-theater');
+    };
+  }, [oiTheaterOn, oiHasRun]);
+  // A shared link (?oi=<run>) opens the panel on that run, and the camera
+  // goes to the run rather than to the visitor's city.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('oi');
+    if (!id) return;
+    autoLocateCancelled.current = true;
+    setOiMode('forecast');
+    if (window.matchMedia('(max-width: 767px)').matches) setMobilePanel('oi');
+    else setShowOi(true);
+    void oi.watch(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Once a run is under way the camera is the director's (lib/oi/camera): a late answer about the
+  // visitor's city must not fly it away.
+  useEffect(() => { if (oi.runId) autoLocateCancelled.current = true; }, [oi.runId]);
   const [mapProjection, setMapProjection] = useState<'globe'|'mercator'>('globe');
   const [terrainFocus, setTerrainFocus] = useState(0);
   const [terrainStatus, setTerrainStatus] = useState<TerrainStatus>('idle');
@@ -360,6 +489,9 @@ export default function Dashboard() {
     sdk_sea: true,
     sdk_air: true,
     sdk_naval: true,
+    /* NOAA's infrared cloud mosaic — see lib/live-clouds. Off until asked for:
+       it veils everything under it. */
+    live_clouds: false,
     terrain_3d: false,
     terrain_elevation: false,
     malware: false,
@@ -368,6 +500,114 @@ export default function Dashboard() {
     cf_outages: false,
     cf_attacks: false,
   });
+  // ── OI ASSIST ── the conversation, and the page it works: the camera, the
+  // layers, the panels, the live data, and what it marks on the map. It lives
+  // here, so closing the panel keeps the conversation and its marks.
+  const [oiHighlight, setOiHighlight] = useState<Highlight | null>(null);
+  const [oiVoice, setOiVoice] = useState(() => typeof window !== 'undefined' && localStorage.getItem('osiris.oi.voice') === '1');
+  const setOiVoicePersist = useCallback((on: boolean) => {
+    setOiVoice(on);
+    try { localStorage.setItem('osiris.oi.voice', on ? '1' : '0'); } catch { /* storage blocked */ }
+    if (!on && typeof window !== 'undefined') window.speechSynthesis?.cancel();
+  }, []);
+  const assistView = useRef<ReturnType<Site['view']>>({ lat: 20, lng: 0, zoom: 2.5, projection: 'globe', style: 'dark' });
+  const assistLayers = useRef<Record<string, boolean>>(activeLayers);
+  const assistVoice = useRef(oiVoice);
+  const assistOi = useRef(oi);
+  useEffect(() => { assistLayers.current = activeLayers; }, [activeLayers]);
+  useEffect(() => { assistVoice.current = oiVoice; }, [oiVoice]);
+  useEffect(() => { assistOi.current = oi; });
+  useEffect(() => {
+    assistView.current = { lat: mapCenter?.lat ?? 20, lng: mapCenter?.lng ?? 0, zoom: mapView.zoom, projection: mapProjection, style: mapStyle, bounds: mapCenter?.bounds };
+  }, [mapCenter, mapView.zoom, mapProjection, mapStyle]);
+  /** A panel the assistant asked for, opened the way its own button opens it. */
+  const openFromAssist = useCallback((panel: string) => {
+    const phone = window.matchMedia('(max-width: 767px)').matches;
+    const right = (show: () => void) => { setShowOi(false); setShowIntel(false); setShowMarkets(false); setShowAlerts(false); setShowSpaceCam(false); show(); };
+    if (panel === 'markets') { if (phone) setMobilePanel('markets'); else right(() => setShowMarkets(true)); }
+    else if (panel === 'alerts') right(() => setShowAlerts(true));
+    else if (panel === 'intel') { if (phone) setMobilePanel('recon'); else right(() => setShowIntel(true)); }
+    else if (panel === 'layers') { if (phone) setMobilePanel('layers'); else setShowLayers(true); }
+    else if (panel === 'directions') setShowDirections(true);
+    else if (panel === 'forecast' || panel === 'workspace') {
+      setOiMode('forecast');
+      if (phone) setMobilePanel('oi'); else setShowOi(true);
+      if (panel === 'workspace' && assistOi.current.state && !phone) setOiTheater(true);
+    }
+  }, []);
+  const assistTheater = useRef(oiTheater);
+  const assistStage = useRef<Stage>(oiStage);
+  useEffect(() => { assistTheater.current = oiTheater; }, [oiTheater]);
+  useEffect(() => { assistStage.current = oiStage; }, [oiStage]);
+  const assistSite = useMemo<Omit<Site, 'forecast'>>(() => ({
+    data: () => dataRef.current,
+    view: () => assistView.current,
+    layers: () => assistLayers.current,
+    flyTo: (lat, lng, zoom) => { oiGlobe.current?.follow(false); setFlyToLocation({ lat, lng, zoom, ts: Date.now() }); },
+    setLayers: (on, off) => setActiveLayers(prev => {
+      const next = { ...prev } as Record<string, boolean>;
+      for (const k of on) if (k in next) next[k] = true;
+      for (const k of off) if (k in next) next[k] = false;
+      return next as typeof prev;
+    }),
+    highlight: h => setOiHighlight(h),
+    openPanel: openFromAssist,
+    setView: ({ projection, style }) => {
+      if (projection) {
+        if (projection === 'mercator') setActiveLayers(prev => ({ ...prev, terrain_elevation: false, terrain_3d: false }));
+        setMapProjection(projection);
+      }
+      if (style) setMapStyle(style);
+    },
+    workspace: ({ open, view }) => {
+      if (window.matchMedia('(max-width: 767px)').matches) return { ok: false, error: 'The full-screen workspace is for larger screens' };
+      const run = assistOi.current.state;
+      if (view && view !== 'globe' && !run) return { ok: false, error: `The ${view} needs a forecast: start one first` };
+      if (open === false) { setOiTheater(false); return { ok: true, summary: 'Closed the workspace' }; }
+      setShowOi(true);
+      setOiTheater(true);
+      if (view) setOiStage(view);
+      return { ok: true, summary: `Opened the workspace${view ? ` on the ${view}` : ''}` };
+    },
+    select: name => {
+      const run = assistOi.current.state;
+      if (!run) return { ok: false, error: 'There is no forecast to select from' };
+      const hit = searchObjects(run, name, 1)[0];
+      if (!hit) return { ok: false, error: `Nothing called "${name}" in this forecast` };
+      setOiSelected(hit.key);
+      return { ok: true, summary: `Opened ${hit.title} (${TYPE_LABEL[hit.type].toLowerCase()})` };
+    },
+    geocode: async q => {
+      try {
+        const res = await fetch(`/api/geosearch?q=${encodeURIComponent(q)}`);
+        const hit = (await res.json())?.results?.[0];
+        return hit && Number.isFinite(hit.lat) && Number.isFinite(hit.lng) ? { name: hit.name, lat: hit.lat, lng: hit.lng, kind: hit.kind } : null;
+      } catch { return null; }
+    },
+  }), [openFromAssist]);
+  const assist = useAssist({
+    site: assistSite,
+    startForecast: async (question, depth, auth) => {
+      const id = await assistOi.current.start({ question, seed: '', depth, useFeeds: true }, auth.engine, auth.key);
+      return id ? { ok: true, id } : { ok: false, error: 'The forecast did not start: check the key and try again.' };
+    },
+    forecastSummary: () => {
+      const st = assistOi.current.state;
+      return st ? {
+        question: st.question, status: st.status === 'running' ? st.phaseLabel || 'running' : st.status, answer: currentAnswer(st),
+        objects: objectsOf(st).filter(o => o.type === 'actor' || o.type === 'panelist').map(o => o.title).slice(0, 40),
+      } : null;
+    },
+    ui: () => ({ fullscreen: assistTheater.current, stage: assistStage.current }),
+    onReply: text => {
+      if (!assistVoice.current || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text.replace(/^- /gm, '').replace(/\s+/g, ' ').trim());
+      u.rate = 1.03;
+      window.speechSynthesis.speak(u);
+    },
+  });
+
   // Server-side capability flags — gate layers that need credentials.
   const selectFlatMap = () => {
     setActiveLayers(prev => ({ ...prev, terrain_elevation: false, terrain_3d: false }));
@@ -487,10 +727,32 @@ export default function Dashboard() {
     if (urlTimer.current) clearTimeout(urlTimer.current);
     urlTimer.current = setTimeout(() => {
       const active = Object.entries(activeLayers).filter(([,v]) => v).map(([k]) => k).join(',');
-      const url = `${window.location.pathname}?layers=${active}`;
+      // A forecast being watched keeps its place in the address, so the address bar stays shareable.
+      const oiRun = new URLSearchParams(window.location.search).get('oi');
+      const url = `${window.location.pathname}?layers=${active}${oiRun ? `&oi=${encodeURIComponent(oiRun)}` : ''}`;
       window.history.replaceState(null, '', url);
     }, 1500);
   }, [activeLayers]);
+
+  // OI focus: clear the globe of the other layers while a forecast draws,
+  // and put back exactly what was on when focus ends.
+  const [oiFocus, setOiFocus] = useState(false);
+  const focusSaved = useRef<typeof activeLayers | null>(null);
+  const toggleOiFocus = useCallback(() => {
+    const saved = focusSaved.current;
+    if (saved) {
+      focusSaved.current = null;
+      setActiveLayers(saved);
+      setOiFocus(false);
+      return;
+    }
+    const KEEP = new Set(['day_night', 'live_clouds', 'terrain_3d', 'terrain_elevation']);
+    setActiveLayers(prev => {
+      focusSaved.current = prev;
+      return Object.fromEntries(Object.entries(prev).map(([k, v]) => [k, KEEP.has(k) ? v : false])) as typeof prev;
+    });
+    setOiFocus(true);
+  }, []);
 
   // Global Stats Fetch
   useEffect(() => {
@@ -509,6 +771,12 @@ export default function Dashboard() {
       if (e.key === 'f' && !e.ctrlKey) {
         if (document.fullscreenElement) document.exitFullscreen();
         else document.documentElement.requestFullscreen();
+      }
+      if (e.key === 'o' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        setOiMode('assist');
+        setOiAutoFocus(true);
+        if (window.matchMedia('(max-width: 767px)').matches) setMobilePanel('oi');
+        else { setShowOi(true); setShowIntel(false); setShowMarkets(false); setShowAlerts(false); setShowSpaceCam(false); }
       }
       if (e.key === 'l') setShowLayers(p => !p);
       if (e.key === 'm') setShowMarkets(p => !p);
@@ -1288,8 +1556,25 @@ export default function Dashboard() {
           onDrawComplete={handleDrawComplete}
           drawnPolygons={drawnPolygons}
           aircraftAirports={aircraftAirports}
+          onOiGlobe={handleOiGlobe}
+          onOiSelect={handleOiSelect}
+          onOiHover={setOiHover}
+          onOiFollow={setOiFollowing}
+          oiHighlight={oiHighlight}
         />
       </ErrorBoundary>
+
+      {/* ── OI: what the pointer is over on the globe ── */}
+      {oiHover && !isMobile && (
+        <div
+          className="fixed z-[950] pointer-events-none max-w-[300px] rounded-lg border border-[var(--border-primary)] bg-[rgba(12,14,26,0.94)] backdrop-blur-xl px-3 py-2 shadow-[0_8px_32px_rgba(0,0,0,0.6)]"
+          style={{ left: Math.min(oiHover.x + 14, (typeof window !== 'undefined' ? window.innerWidth : 1920) - 314), top: oiHover.y + 16 }}
+        >
+          <div className="text-[11.5px] font-medium leading-snug text-[var(--text-heading)]">{oiHover.title}</div>
+          {oiHover.detail && <div className="mt-0.5 text-[10.5px] leading-snug text-[var(--text-secondary)]">{oiHover.detail}</div>}
+          <div className="mt-1 text-[8.5px] font-mono tracking-[0.18em] text-[var(--gold-primary)]">CLICK TO OPEN</div>
+        </div>
+      )}
 
       {/* ── DIRECTIONS — opens beside the right-hand tool rail ── */}
       <div
@@ -1373,6 +1658,7 @@ export default function Dashboard() {
 
       {/* ── MAP VIEW CONTROLS ── */}
       <motion.div
+        data-hud
         initial={{ opacity: 0, y: 20 }} animate={revealed ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 }} transition={hudIn(0.45)}
         className="absolute bottom-[75px] md:bottom-[100px] z-[200] flex flex-col gap-1.5 pointer-events-none"
         style={{ left: isMobile ? '12px' : '120px' }}
@@ -1396,7 +1682,7 @@ export default function Dashboard() {
       </motion.div>
 
       {/* ── HEADER ── */}
-      <motion.div initial={{ opacity: 0, y: -20 }} animate={revealed ? { opacity: 1, y: 0 } : { opacity: 0, y: -20 }} transition={hudIn(0.15)} className={`absolute top-4 z-[200] pointer-events-none flex flex-col`} style={{ left: isMobile ? '24px' : '64px', right: '24px' }}>
+      <motion.div data-hud initial={{ opacity: 0, y: -20 }} animate={revealed ? { opacity: 1, y: 0 } : { opacity: 0, y: -20 }} transition={hudIn(0.15)} className={`absolute top-4 z-[200] pointer-events-none flex flex-col`} style={{ left: isMobile ? '24px' : '64px', right: '24px' }}>
         <div className="flex items-center gap-3 w-fit">
           <svg viewBox="0 0 650 500" className="w-8 h-8 md:w-10 md:h-10 shrink-0 transition-colors duration-500 text-[#D4AF37] drop-shadow-[0_0_8px_rgba(255,215,0,0.5)]" fill="currentColor">
             <path d="m620.39,364.82c-0.53628-7.2677-1.7767-14.482-5.0286-21.276-9.4786-19.803-33.963-29.34-53.026-19.284-15.333,8.0885-22.563,29.331-13.578,45.149,6.873,12.099,23.072,18.235,35.622,10.228,4.4328-2.828,7.6343-7.2793,8.9938-12.286,1.3595-5.0063,0.68452-10.798-2.9392-15.401-2.2364-2.8407-5.4473-4.7654-9.1114-5.408-3.664-0.64263-8.1708,0.40388-10.875,3.9972-1.7829,2.3692-1.91,4.5449-1.4108,7.1127,0.24961,1.2839,0.78116,2.8399,2.3513,3.9972,1.5702,1.1573,4.2926,1.9424,5.5844,0.58783,1.1069-1.1607-0.67477-3.153-0.73029-4.7559-0.0388-0.83158-0.0772-1.7317,0.26004-2.4745,0.89679-1.1463,1.8493-1.342,3.4682-1.0581,1.6548,0.29023,3.6474,1.4542,4.5851,2.6452v0.0588c2.0224,2.5986,2.3717,5.5943,1.5284,8.6999-0.81645,3.0066-2.8568,5.919-5.4668,7.7006l-0.29391,0.23513c-8.5452,5.4516-18.484,0.70317-23.392-7.9366-6.7162-11.823-1.5113-26.282,10.285-32.505,15.078-7.9537,35.744,1.451,40.36,17.085,4.566,15.464,2.8715,30.938,0.27385,37.511l10.609,0.073c2.5579-12.089,1.9287-15.035,1.9287-22.696z" />
@@ -1417,7 +1703,7 @@ export default function Dashboard() {
 
 
       {/* ── TOP-RIGHT STATUS (desktop) ── */}
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: revealed ? 1 : 0 }} transition={hudIn(0.35)} className="status-bar-desktop absolute top-4 right-6 z-[200] pointer-events-none flex items-center gap-3 text-[10px] font-mono tracking-widest text-[var(--text-muted)]">
+      <motion.div data-hud initial={{ opacity: 0 }} animate={{ opacity: revealed ? 1 : 0 }} transition={hudIn(0.35)} className="status-bar-desktop absolute top-4 right-6 z-[200] pointer-events-none flex items-center gap-3 text-[10px] font-mono tracking-widest text-[var(--text-muted)]">
 
         <span className="hidden lg:inline-flex items-center gap-1.5">
           <ZuluClock />
@@ -1459,14 +1745,14 @@ export default function Dashboard() {
 
 
       {/* ── NEW SIDEBAR (Root Level) ── */}
-      {showLayers && !isMobile && <LayerPanel {...terrainPanelProps} revealed={revealed} data={data} activeLayers={activeLayers} setActiveLayers={setActiveLayers} theme={osirisTheme} setTheme={setOsirisTheme} capabilities={capabilities} />}
+      {showLayers && !isMobile && <div data-hud><LayerPanel {...terrainPanelProps} revealed={revealed} data={data} activeLayers={activeLayers} setActiveLayers={setActiveLayers} theme={osirisTheme} setTheme={setOsirisTheme} capabilities={capabilities} /></div>}
 
 
 
       {/* ── RIGHT TOOL STRIP (desktop only — mobile uses bottom nav) ── */}
-      {!isMobile && <motion.div initial={{ opacity: 0, x: 12 }} animate={revealed ? { opacity: 1, x: 0 } : { opacity: 0, x: 12 }} transition={hudIn(0.3)} className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-[250] pointer-events-auto bg-black/40 backdrop-blur-sm p-1 rounded-full border border-white/5">
+      {!isMobile && <motion.div data-hud initial={{ opacity: 0, x: 12 }} animate={revealed ? { opacity: 1, x: 0 } : { opacity: 0, x: 12 }} transition={hudIn(0.3)} className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 z-[250] pointer-events-auto bg-black/40 backdrop-blur-sm p-1 rounded-full border border-white/5">
         <div className="relative group">
-          <button onClick={() => { setShowIntel(!showIntel); setShowMarkets(false); setShowAlerts(false); }} className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showIntel ? 'bg-[var(--cyan-primary)]/20' : 'hover:bg-white/10'}`} title="OSINT Recon — IP lookup, network sweep, geolocation" aria-label="OSINT Recon" aria-expanded={showIntel}>
+          <button onClick={() => { setShowIntel(!showIntel); setShowOi(false); setShowMarkets(false); setShowAlerts(false); }} className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showIntel ? 'bg-[var(--cyan-primary)]/20' : 'hover:bg-white/10'}`} title="OSINT Recon — IP lookup, network sweep, geolocation" aria-label="OSINT Recon" aria-expanded={showIntel}>
             <Radar className={`w-4 h-4 ${showIntel ? 'text-[var(--cyan-primary)]' : 'text-white/60'}`} />
             {showIntel && (
               <span
@@ -1492,7 +1778,7 @@ export default function Dashboard() {
         </div>
 
         <div className="relative group">
-          <button onClick={() => { setShowIntel(false); setShowAlerts(false); setShowMarkets(false); setShowSpaceCam(v => !v); }} className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showSpaceCam ? 'bg-[#00E5FF]/20' : 'hover:bg-white/10'}`} title="Live from Space — 24/7 video downlink from the ISS" aria-label="Live from Space" aria-expanded={showSpaceCam}>
+          <button onClick={() => { setShowIntel(false); setShowOi(false); setShowAlerts(false); setShowMarkets(false); setShowSpaceCam(v => !v); }} className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showSpaceCam ? 'bg-[#00E5FF]/20' : 'hover:bg-white/10'}`} title="Live from Space — 24/7 video downlink from the ISS" aria-label="Live from Space" aria-expanded={showSpaceCam}>
             <Radio className={`w-4 h-4 ${showSpaceCam ? 'text-[#00E5FF]' : 'text-white/60'}`} />
             {showSpaceCam && (
               <span
@@ -1511,8 +1797,8 @@ export default function Dashboard() {
           </AnimatePresence>
         </div>
 
-        <div className="relative group">
-          <button onClick={() => { setShowMarkets(!showMarkets); setShowIntel(false); setShowAlerts(false); setShowSpaceCam(false); }} className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showMarkets ? 'bg-[var(--gold-primary)]/20' : 'hover:bg-white/10'}`} title="Markets — crypto prices, space weather, global indices" aria-label="Markets" aria-expanded={showMarkets}>
+        <div ref={marketsAnchor} className="relative group">
+          <button onClick={() => { setShowMarkets(!showMarkets); setShowOi(false); setShowIntel(false); setShowAlerts(false); setShowSpaceCam(false); }} className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showMarkets ? 'bg-[var(--gold-primary)]/20' : 'hover:bg-white/10'}`} title="Markets — crypto prices, space weather, global indices" aria-label="Markets" aria-expanded={showMarkets}>
             <BarChart3 className={`w-4 h-4 ${showMarkets ? 'text-[var(--gold-primary)]' : 'text-white/60'}`} />
             {showMarkets && (
               <span
@@ -1524,7 +1810,7 @@ export default function Dashboard() {
           <span className="absolute right-11 top-1/2 -translate-y-1/2 px-2 py-1 text-[9px] font-mono tracking-wider text-white/80 bg-black/80 backdrop-blur-sm rounded whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pointer-events-none">MARKETS</span>
           <AnimatePresence>
             {showMarkets && (
-              <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="absolute right-12 top-1/2 -translate-y-1/2 w-80">
+              <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="absolute right-12 w-[380px]" style={{ top: marketsTop }}>
                 <MarketsPanel data={data} spaceWeather={spaceWeather} />
               </motion.div>
             )}
@@ -1532,7 +1818,7 @@ export default function Dashboard() {
         </div>
 
         <div className="relative group">
-          <button onClick={() => { setShowAlerts(!showAlerts); setShowIntel(false); setShowMarkets(false); setShowDrawing(false); }} className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showAlerts ? 'bg-[#FF3D3D]/20' : 'hover:bg-white/10'}`} title="Live Alerts — earthquakes, conflicts, breaking news" aria-label="Live Alerts" aria-expanded={showAlerts}>
+          <button onClick={() => { setShowAlerts(!showAlerts); setShowOi(false); setShowIntel(false); setShowMarkets(false); setShowDrawing(false); }} className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showAlerts ? 'bg-[#FF3D3D]/20' : 'hover:bg-white/10'}`} title="Live Alerts — earthquakes, conflicts, breaking news" aria-label="Live Alerts" aria-expanded={showAlerts}>
             <AlertTriangle className={`w-4 h-4 ${showAlerts ? 'text-[#FF3D3D]' : 'text-white/60'}`} />
             {showAlerts && (
               <span
@@ -1562,6 +1848,35 @@ export default function Dashboard() {
             )}
           </button>
           <span className="absolute right-11 top-1/2 -translate-y-1/2 px-2 py-1 text-[9px] font-mono tracking-wider text-white/80 bg-black/80 backdrop-blur-sm rounded whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pointer-events-none">DRAW</span>
+        </div>
+
+        <div ref={oiAnchor} className="relative group">
+          {/* OI, the strip's main tool: bigger than the rest, in the middle of it, in its own colours. */}
+          <button onClick={() => { setShowOi(!showOi); setShowIntel(false); setShowMarkets(false); setShowAlerts(false); setShowSpaceCam(false); }}
+            className={`relative w-11 h-11 rounded-full flex flex-col items-center justify-center gap-[3px] border transition-all duration-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showOi ? 'bg-[var(--gold-primary)]/20 border-[var(--gold-primary)]/70 shadow-[0_0_18px_rgba(var(--gold-rgb),0.35)]' : 'bg-[var(--gold-primary)]/[0.07] border-[var(--gold-primary)]/35 hover:bg-[var(--gold-primary)]/15 hover:border-[var(--gold-primary)]/60 hover:shadow-[0_0_14px_rgba(var(--gold-rgb),0.25)]'}`}
+            title="OI — talk to it and it works the map for you, or run a forecast, on your own AI key (O)" aria-label="OI" aria-expanded={showOi}>
+            <OiMark size={18} live={oi.state?.status === 'running' || assist.busy} />
+            <span className={`text-[7.5px] font-mono font-semibold tracking-[0.2em] leading-none pl-[0.2em] ${showOi ? 'text-[var(--gold-light)]' : 'text-[var(--gold-primary)]'}`}>OI</span>
+            {showOi && (
+              <span
+                aria-hidden="true"
+                className="absolute -right-1 top-1/2 -translate-y-1/2 h-5 w-[2px] rounded-full bg-current text-[var(--gold-primary)]"
+              />
+            )}
+            {oi.state?.status === 'running' && <span aria-hidden="true" className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[var(--alert-green)] border border-black/60 animate-pulse" />}
+          </button>
+          <span className="absolute right-14 top-1/2 -translate-y-1/2 px-2 py-1 text-[9px] font-mono tracking-wider text-white/80 bg-black/80 backdrop-blur-sm rounded whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pointer-events-none">OI · ASSIST &amp; FORECAST</span>
+          <AnimatePresence>
+            {showOi && (
+              <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="absolute right-[60px] w-[412px]" style={{ top: oiTop }}>
+                <OiPanel oi={oi} selected={oiSelected} onSelect={setOiSelected} onClose={() => { setShowOi(false); setOiTheater(false); setOiAutoFocus(false); }}
+                  focus={oiFocus} onFocus={toggleOiFocus} onLocate={handleOiLocate}
+                  theater={oiTheater} onTheater={setOiTheater} following={oiFollowing} onFollow={followOi}
+                  assist={assist} mode={oiMode} onMode={setOiMode} speakOn={oiVoice} onSpeak={setOiVoicePersist} autoFocus={oiAutoFocus}
+                  stage={oiStage} onStage={setOiStage} />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         <div className="relative group">
@@ -1766,6 +2081,7 @@ export default function Dashboard() {
                 { id: 'markets' as const, icon: BarChart3, label: 'MARKETS' },
                 { id: 'intel' as const, icon: Newspaper, label: 'INTEL' },
                 { id: 'recon' as const, icon: Radar, label: 'RECON' },
+                { id: 'oi' as const, icon: Orbit, label: 'OI' },
                 { id: 'search' as const, icon: Search, label: 'SEARCH' },
                 // Routing was reachable only from the desktop tool rail, so a
                 // phone could not open it at all. It sits next to SEARCH
@@ -1822,7 +2138,7 @@ export default function Dashboard() {
                 <div className="px-3 pb-3">
                   <div className="flex items-center justify-between mb-2">
                     <span className="hud-text text-[10px] text-[var(--text-primary)]">
-                      {mobilePanel === 'layers' ? 'LAYERS & STATS' : mobilePanel === 'markets' ? 'MARKETS & INTEL' : mobilePanel === 'intel' ? 'INTEL FEED' : mobilePanel === 'recon' ? 'OSIRIS RECON' : mobilePanel === 'remote' ? 'WORLD REMOTE' : 'SEARCH'}
+                      {mobilePanel === 'layers' ? 'LAYERS & STATS' : mobilePanel === 'markets' ? 'MARKETS & INTEL' : mobilePanel === 'intel' ? 'INTEL FEED' : mobilePanel === 'recon' ? 'OSIRIS RECON' : mobilePanel === 'remote' ? 'WORLD REMOTE' : mobilePanel === 'oi' ? 'OSIRIS OI' : 'SEARCH'}
                     </span>
                     <button onClick={() => setMobilePanel(null)} className="text-[var(--text-muted)] p-1"><X className="w-4 h-4" /></button>
                   </div>
@@ -1844,6 +2160,12 @@ export default function Dashboard() {
                     </>
                   )}
                   {mobilePanel === 'markets' && <MarketsPanel data={data} spaceWeather={spaceWeather} />}
+                  {mobilePanel === 'oi' && (
+                    <OiPanel oi={oi} selected={oiSelected} onSelect={setOiSelected} embedded focus={oiFocus} onFocus={toggleOiFocus}
+                      onLocate={handleOiLocate} following={oiFollowing} onFollow={followOi}
+                      assist={assist} mode={oiMode} onMode={setOiMode} speakOn={oiVoice} onSpeak={setOiVoicePersist}
+                      stage={oiStage} onStage={setOiStage} />
+                  )}
                   {mobilePanel === 'intel' && <IntelFeed data={data} onLocate={(lat, lng) => { setFlyToLocation({ lat, lng, ts: Date.now() }); setMobilePanel(null); }} />}
                   {mobilePanel === 'search' && (
                     <div className="space-y-2">
@@ -1991,7 +2313,7 @@ export default function Dashboard() {
       <KeyboardShortcuts />
 
       {/* ── GLOBAL STATUS TICKER (bottom) ── */}
-      <GlobalStatusBar revealed={revealed} />
+      <div data-hud><GlobalStatusBar revealed={revealed} /></div>
 
       {/* Shortcut hint — more visible */}
       <div className="desktop-only absolute bottom-[26px] right-5 z-[200] pointer-events-none text-[9px] font-mono text-[var(--text-muted)] opacity-50 tracking-widest" title="Press ? to see all keyboard shortcuts">
