@@ -5,7 +5,6 @@
 ### A fork from the Open Source Intelligence & Reconnaissance Integrated System
 
 [![Live Demo](https://img.shields.io/badge/osirisai.live-00E5FF?style=for-the-badge&logo=vercel&logoColor=white)](https://osirislive.app)
-[![Support OSIRIS](https://img.shields.io/badge/Support_Project-Patreon-FF424D?style=for-the-badge&logo=patreon&logoColor=white)](https://www.patreon.com/posts/159077425)
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?style=for-the-badge&logo=next.js)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://typescriptlang.org)
 [![MapLibre](https://img.shields.io/badge/MapLibre_GL-GPU_Rendered-396CB2?style=for-the-badge)](https://maplibre.org)
@@ -289,13 +288,11 @@ The OSIRIS Global Intelligence Grid is entirely open-source, but running the bac
 
 If you want to help keep the servers alive, and support us to get access to better tools  unlock the **Special OSIRIS Console**, Currently Just a Cool UI. a you can officially support the project here : 
 
-🔗 [Support OSIRIS on Patreon](https://www.patreon.com/posts/159077425)
 
 *Supporters receive the `🔴 RedTeam Console` role and access to encrypted developer comms.*
 
 
 **Built by [simplifaisoul](https://github.com/simplifaisoul)**
-
-[Join our Discord to be a part of this movement!](https://discord.gg/umBykEpb98)
+**Modify by [cj7bot]()**
 
 </div>
