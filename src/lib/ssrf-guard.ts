@@ -109,6 +109,18 @@ export interface ValidationResult {
   resolved?: string[];
 }
 
+const VALIDATION_CACHE_TTL_MS = 10 * 60 * 1000;
+const validationCache = new Map<string, { result: ValidationResult; expires: number }>();
+
+function rememberValidation(host: string, result: ValidationResult): ValidationResult {
+  if (validationCache.size > 1000) {
+    const first = validationCache.keys().next().value;
+    if (first) validationCache.delete(first);
+  }
+  validationCache.set(host, { result, expires: Date.now() + VALIDATION_CACHE_TTL_MS });
+  return result;
+}
+
 /**
  * Validate that `host` (either an IP literal or a hostname) is safe to use as
  * a network target. Returns ok=false when the literal IP is in a blocked
@@ -122,10 +134,15 @@ export async function validateHost(host: string): Promise<ValidationResult> {
   // Strip brackets for IPv6 literals like [::1]
   const bracketed = trimmed.replace(/^\[|\]$/g, '');
 
+  const lowerHost = trimmed.toLowerCase();
+  const cached = validationCache.get(lowerHost);
+  if (cached && Date.now() < cached.expires) {
+    return cached.result;
+  }
+
   // Reject obvious metadata-style hostnames before they ever hit DNS. These
   // are independent of which IP they resolve to; the names alone are not
   // legitimate scan / probe targets.
-  const lowerHost = trimmed.toLowerCase();
   const NAME_BLOCKLIST = [
     /^localhost$/i,
     /\.localhost$/i,
@@ -135,7 +152,7 @@ export async function validateHost(host: string): Promise<ValidationResult> {
     /^metadata\.google\.internal$/i,
   ];
   if (NAME_BLOCKLIST.some(re => re.test(lowerHost))) {
-    return { ok: false, reason: 'hostname matches reserved name pattern' };
+    return rememberValidation(lowerHost, { ok: false, reason: 'hostname matches reserved name pattern' });
   }
 
   // Literal IP path
@@ -144,11 +161,11 @@ export async function validateHost(host: string): Promise<ValidationResult> {
     const canonical = parseIPv4(bracketed);
     if (!canonical) return { ok: false, reason: 'non-canonical IPv4 form rejected' };
     if (ipv4InBlocked(canonical)) return { ok: false, reason: 'IPv4 in reserved range' };
-    return { ok: true, resolved: [canonical] };
+    return rememberValidation(lowerHost, { ok: true, resolved: [canonical] });
   }
   if (ipFamily === 6) {
     if (ipv6InBlocked(bracketed)) return { ok: false, reason: 'IPv6 in reserved range' };
-    return { ok: true, resolved: [bracketed] };
+    return rememberValidation(lowerHost, { ok: true, resolved: [bracketed] });
   }
 
   // Hostname — basic syntax check then resolve and re-check
@@ -167,12 +184,12 @@ export async function validateHost(host: string): Promise<ValidationResult> {
   }
   for (const a of answers) {
     if (a.family === 4) {
-      if (ipv4InBlocked(a.address)) return { ok: false, reason: `hostname resolves to reserved IPv4 ${a.address}` };
+      if (ipv4InBlocked(a.address)) return rememberValidation(lowerHost, { ok: false, reason: `hostname resolves to reserved IPv4 ${a.address}` });
     } else if (a.family === 6) {
-      if (ipv6InBlocked(a.address)) return { ok: false, reason: `hostname resolves to reserved IPv6 ${a.address}` };
+      if (ipv6InBlocked(a.address)) return rememberValidation(lowerHost, { ok: false, reason: `hostname resolves to reserved IPv6 ${a.address}` });
     }
   }
-  return { ok: true, resolved: answers.map(a => a.address) };
+  return rememberValidation(lowerHost, { ok: true, resolved: answers.map(a => a.address) });
 }
 
 /**

@@ -30,9 +30,10 @@ export function loadCameraCatalog(onBatch: (cameras: CatalogCamera[]) => void, o
       if (controller.signal.aborted) return;
       onError();
     }
-    // Three attempts total, with backoff. No endless retries against dead feeds.
+    // Three attempts total, with progressive fast recovery (2.5s, 5s).
     if (remaining.length && attempts < 3 && !controller.signal.aborted) {
-      timer = setTimeout(() => void load(remaining), attempts * 15_000);
+      const delay = Math.min(attempts * 2_500, 5_000);
+      timer = setTimeout(() => void load(remaining), delay);
     }
   };
   void load(['all']);

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { stealthFetch } from '@/lib/stealthFetch';
-import { cachedSource, isStale, peekSource, seedSource } from '@/lib/sourceCache';
+import { cachedSource, clearSourceCache, isStale, peekSource, seedSource } from '@/lib/sourceCache';
 import { buildPayload, clearPayload, getPayload, readSnapshot, writeSnapshot, type Payload, type RegionCameras } from '@/lib/cctv-snapshot';
 import { createPool } from '@/lib/fetch-pool';
 
@@ -590,8 +590,9 @@ const REGION_BUDGET_MS = 12_000;
  * waits properly rather than returning an empty map.
  */
 const WARM_GRACE_MS = 2_000;
+const COLD_BUDGET_MS = 3_000;
 
-const REGION_CONCURRENCY = 4;
+const REGION_CONCURRENCY = 8;
 const regionPool = createPool(REGION_CONCURRENCY);
 
 /**
@@ -763,6 +764,7 @@ export async function warmCctvCatalog() {
 /** Test seam — drops queued refreshes between cases. */
 export function clearCctvRefreshes() {
   refreshing.clear();
+  backedOff.clear();
   regionPool.reset();
   restoring = undefined;
   clearPayload();
@@ -793,7 +795,7 @@ async function collectRegions(regions: string[]): Promise<{ cameras: Record<stri
     .then(result => { if (result.length) cameras[region] = result; })
     .catch(() => { /* the cache logs it and keeps the last good index */ }));
 
-  const budget = Object.keys(cameras).length ? WARM_GRACE_MS : REGION_BUDGET_MS;
+  const budget = Object.keys(cameras).length ? WARM_GRACE_MS : COLD_BUDGET_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<void>(resolve => { timer = setTimeout(resolve, budget); });
   await Promise.race([Promise.all(fetches), deadline]);
@@ -909,7 +911,7 @@ function getRegionsForBounds(lat: number, lng: number, radius: number): string[]
   if (lat > -11 && lat < 24 && lng > 92 && lng < 130) regions.push('seasia');
   if (lat > 5 && lat < 56 && lng > 25 && lng < 92) regions.push('westasia');
   // Australia explicitly
-  if (lat > -45 && lat < -10 && lng > 110 && lng < 155) regions.push('asia');
+  if (lat > -45 && lat < -10 && lng > 110 && lng < 155) regions.push('australia');
   // New Zealand (NZTA)
   if (lat > -47.5 && lat < -34 && lng > 166 && lng < 179) regions.push('newzealand');
 
@@ -980,6 +982,10 @@ export async function GET(request: Request) {
     const lat = parseFloat(searchParams.get('lat') || '0');
     const lng = parseFloat(searchParams.get('lng') || '0');
     const radius = parseFloat(searchParams.get('radius') || '10');
+    if (searchParams.get('refresh') === '1') {
+      clearSourceCache();
+      clearCctvRefreshes();
+    }
 
     let regionsToFetch: string[];
 

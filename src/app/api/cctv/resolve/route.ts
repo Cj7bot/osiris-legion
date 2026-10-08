@@ -28,20 +28,20 @@ export const maxDuration = 15;
  */
 
 // Three different lifetimes, because these are three different facts.
-const OK_TTL_MS = 30 * 60_000;         // a resolved stream id is stable for a while
-const NO_FEED_TTL_MS = 5 * 60_000;     // 'this page has no embeddable feed' is a
-                                       // property of the page, good to reuse
-const UNREACHABLE_TTL_MS = 30_000;     // a network failure says nothing about the
-                                       // page. Caching it as long as a real answer
-                                       // turns one timeout into minutes of a camera
-                                       // looking unavailable when it is fine.
+const OK_TTL_MS = 120 * 60_000;        // a resolved stream id is stable for 2 hours
+const NO_FEED_TTL_MS = 10 * 60_000;    // 'this page has no embeddable feed' is good to reuse
+const UNREACHABLE_TTL_MS = 15_000;     // a network failure is retried sooner
+
 const MAX_ENTRIES = 1000;
 
 type Resolution =
   | { embeddable: true; kind: 'youtube'; videoId: string; embedUrl: string }
+  | { embeddable: true; kind: 'hls'; streamUrl: string }
+  | { embeddable: true; kind: 'snapshot'; feedUrl: string }
   | { embeddable: false; kind: 'hls' | 'offline' | 'missing' | 'unknown' | 'unreachable' };
 
 const cache = new Map<string, { at: number; ttl: number; value: Resolution }>();
+const inFlightResolutions = new Map<string, Promise<Resolution>>();
 
 function cached(url: string): Resolution | null {
   const hit = cache.get(url);
@@ -77,6 +77,57 @@ function isResolvable(url: string): boolean {
   return isYouTubeUrl(url) && parseYouTubeUrl(url)?.kind === 'live-channel';
 }
 
+async function resolveExternalUrl(url: string): Promise<Resolution> {
+  try {
+    const res = await safeFetch(url, {
+      signal: AbortSignal.timeout(3_500),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; OSIRIS/1.0; +https://github.com/simplifaisoul/osiris)',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Connection': 'keep-alive',
+      },
+    });
+
+    if (res.status === 404 || res.status === 410) {
+      return { embeddable: false, kind: 'missing' };
+    }
+    if (!res.ok) {
+      return { embeddable: false, kind: 'unreachable' };
+    }
+
+    const html = await res.text();
+    if (isSkylineUrl(url)) {
+      const feed = parseSkylinePage(html);
+      if (feed.kind === 'youtube') {
+        return { embeddable: true, kind: 'youtube', videoId: feed.videoId, embedUrl: feed.embedUrl };
+      }
+      if (feed.kind === 'hls' && feed.streamUrl) {
+        return {
+          embeddable: true,
+          kind: 'hls',
+          streamUrl: `/api/cctv/proxy?url=${encodeURIComponent(feed.streamUrl)}&type=stream`,
+        };
+      }
+      if (feed.kind === 'snapshot') {
+        return {
+          embeddable: true,
+          kind: 'snapshot',
+          feedUrl: `/api/cctv/proxy?url=${encodeURIComponent(feed.snapshotUrl)}`,
+        };
+      }
+      return { embeddable: false, kind: feed.kind };
+    }
+
+    const videoId = extractYouTubeId(html);
+    return videoId
+      ? { embeddable: true, kind: 'youtube', videoId, embedUrl: youtubeEmbedUrl(videoId) }
+      : { embeddable: false, kind: 'unknown' };
+  } catch (err) {
+    console.error('cctv resolve failed:', url, err instanceof Error ? err.message : err);
+    return { embeddable: false, kind: 'unreachable' };
+  }
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url).searchParams.get('url');
 
@@ -92,48 +143,15 @@ export async function GET(req: Request) {
     return NextResponse.json(hit, { headers: { 'X-Cache': 'HIT' } });
   }
 
-  let value: Resolution;
-  try {
-    const res = await safeFetch(url, {
-      signal: AbortSignal.timeout(10_000),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; OSIRIS/1.0; +https://github.com/simplifaisoul/osiris)',
-        Accept: 'text/html,application/xhtml+xml',
-      },
+  let inFlight = inFlightResolutions.get(url);
+  if (!inFlight) {
+    inFlight = resolveExternalUrl(url).finally(() => {
+      inFlightResolutions.delete(url);
     });
-
-    if (res.status === 404 || res.status === 410) {
-      // The camera was withdrawn from the source. Durable, unlike a network
-      // failure, and worth distinguishing: otherwise the viewer offers a link
-      // to a page that is not there.
-      value = { embeddable: false, kind: 'missing' };
-    } else if (!res.ok) {
-      value = { embeddable: false, kind: 'unreachable' };
-    } else {
-      const html = await res.text();
-      if (isSkylineUrl(url)) {
-        const feed = parseSkylinePage(html);
-        value = feed.kind === 'youtube'
-          ? { embeddable: true, kind: 'youtube', videoId: feed.videoId, embedUrl: feed.embedUrl }
-          : { embeddable: false, kind: feed.kind };
-      } else {
-        // A channel live page. Off air, there is no video id to find, which is
-        // a real answer about the page rather than a failure.
-        const videoId = extractYouTubeId(html);
-        value = videoId
-          ? { embeddable: true, kind: 'youtube', videoId, embedUrl: youtubeEmbedUrl(videoId) }
-          : { embeddable: false, kind: 'unknown' };
-      }
-    }
-  } catch (err) {
-    // A resolver failure must not look like "this camera is broken" — the
-    // viewer still has the external link to fall back to. Log it, though:
-    // a silent catch here is how a wholly broken resolver looks identical
-    // to a camera that genuinely has no embeddable feed.
-    console.error('cctv resolve failed:', url, err instanceof Error ? err.message : err);
-    value = { embeddable: false, kind: 'unreachable' };
+    inFlightResolutions.set(url, inFlight);
   }
 
+  const value = await inFlight;
   remember(url, value);
 
   return NextResponse.json(value, {

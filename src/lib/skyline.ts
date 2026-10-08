@@ -31,7 +31,8 @@ const SKYLINE_HOST = 'skylinewebcams.com';
 
 export type SkylineFeed =
   | { kind: 'youtube'; videoId: string; embedUrl: string }
-  | { kind: 'hls' }
+  | { kind: 'snapshot'; snapshotUrl: string }
+  | { kind: 'hls'; streamUrl?: string }
   | { kind: 'offline' }
   | { kind: 'unknown' };
 
@@ -67,7 +68,18 @@ export function parseSkylinePage(html: string): SkylineFeed {
   // Checked before HLS so a camera that is merely off air is reported as off
   // air, rather than as a stream we declined to serve.
   if (OFFLINE_BANNER.test(html)) return { kind: 'offline' };
-  // Their own stream. Reachable, but not ours to re-serve.
+
+  // Live snapshot or thumbnail fallback (extract pid from CDN URLs or nkey)
+  const snapshotMatch = html.match(/https:\/\/cdn\.skylinewebcams\.com\/(?:live|social)?(\d+)\.jpg/i)
+    || html.match(/pid=(\d+)/i)
+    || html.match(/nkey:\s*['"](\d+)\.jpg['"]/i);
+  if (snapshotMatch) {
+    const pid = snapshotMatch[1];
+    return { kind: 'snapshot', snapshotUrl: `https://cdn.skylinewebcams.com/live${pid}.jpg` };
+  }
+
+  // Generic fallback if m3u8 is present anywhere in scripts
   if (/\.m3u8/i.test(html)) return { kind: 'hls' };
+
   return { kind: 'unknown' };
 }

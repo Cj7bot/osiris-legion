@@ -57,30 +57,74 @@ export default function CameraViewer({ camera, onClose, onLocate }: CameraViewer
   // immediately and is withdrawn only if the source says the camera is gone.
   const resolveKey: string | null =
     (needsResolution(camera) ? camera.external_url : null) ?? liveFeedAtSource(camera);
-  const [resolution, setResolution] = useState<{ key: string; embed: string | null; offline: boolean; kind?: string } | null>(null);
+  const [resolution, setResolution] = useState<{
+    key: string;
+    embed: string | null;
+    snapshotFeed?: string | null;
+    streamUrl?: string | null;
+    offline: boolean;
+    kind?: string;
+  } | null>(null);
+
   const resolvedEmbed = directEmbed ?? (resolution && resolution.key === resolveKey ? resolution.embed : null);
+  const resolvedSnapshot = resolution && resolution.key === resolveKey ? resolution.snapshotFeed : null;
+  const resolvedStream = resolution && resolution.key === resolveKey ? resolution.streamUrl : null;
   const resolving = Boolean(resolveKey) && resolution?.key !== resolveKey;
   const offline = resolution?.key === resolveKey && resolution.offline;
   const gone = resolution?.key === resolveKey && resolution.kind === 'missing';
 
   // Live video exists at the source but cannot be replayed here, so offer the
   // way through to it and stop calling the still image a live feed.
-  const watchLiveUrl = liveFeedAtSource(camera);
+  const watchLiveUrl = resolvedStream ? null : liveFeedAtSource(camera);
 
   useEffect(() => {
     if (!resolveKey) return;
-    let live = true;
-    fetch(`/api/cctv/resolve?url=${encodeURIComponent(resolveKey)}`)
+    const controller = new AbortController();
+    fetch(`/api/cctv/resolve?url=${encodeURIComponent(resolveKey)}`, { signal: controller.signal })
       .then(r => r.json())
-      .then(d => { if (live) setResolution({ key: resolveKey, embed: d?.embeddable ? d.embedUrl : null, offline: d?.kind === 'offline' || d?.kind === 'missing', kind: d?.kind }); })
-      // A resolver failure is not a broken camera — it falls back to the link.
-      .catch(() => { if (live) setResolution({ key: resolveKey, embed: null, offline: false }); });
-    return () => { live = false; };
+      .then(d => {
+        setResolution({
+          key: resolveKey,
+          embed: d?.embeddable && d.kind === 'youtube' ? d.embedUrl : null,
+          snapshotFeed: d?.embeddable && d.kind === 'snapshot' ? d.feedUrl : null,
+          streamUrl: d?.embeddable && d.kind === 'hls' ? d.streamUrl : null,
+          offline: d?.kind === 'offline' || d?.kind === 'missing',
+          kind: d?.kind,
+        });
+      })
+      .catch((err) => {
+        if (err?.name !== 'AbortError') {
+          setResolution({ key: resolveKey, embed: null, offline: false });
+        }
+      });
+    return () => {
+      controller.abort();
+    };
   }, [resolveKey]);
 
-  const streamType = resolvedEmbed ? 'iframe' : (camera?.stream_type || 'jpg');
-  const streamUrl: string | undefined = resolvedEmbed || camera?.stream_url;
-  const view = offPlatformView({ hostedOffPlatform, resolving, resolvedEmbed, offline });
+  const effectiveFeedUrl = resolvedSnapshot || camera?.feed_url;
+  const isHls = Boolean(
+    resolvedStream ||
+    camera?.stream_type === 'hls' ||
+    (camera?.stream_url && (camera.stream_url.includes('.m3u8') || camera.stream_type === 'hls'))
+  );
+  const streamType = resolvedEmbed
+    ? 'iframe'
+    : (isHls ? 'hls' : (camera?.stream_type || (effectiveFeedUrl ? 'jpg' : camera?.stream_url ? 'hls' : 'jpg')));
+
+  // Proxy external HLS streams through the hybrid proxy to bypass CORS, hotlinking, and rewrite manifests
+  const rawHlsUrl = resolvedStream || (isHls ? camera?.stream_url : undefined);
+  const activeHlsUrl = rawHlsUrl
+    ? (rawHlsUrl.startsWith('/api/cctv/proxy') ? rawHlsUrl : `/api/cctv/proxy?url=${encodeURIComponent(rawHlsUrl)}&type=stream`)
+    : undefined;
+
+  const streamUrl: string | undefined = resolvedEmbed || activeHlsUrl || camera?.stream_url;
+  const view = offPlatformView({
+    hostedOffPlatform: Boolean(hostedOffPlatform && !resolvedSnapshot && !resolvedStream),
+    resolving,
+    resolvedEmbed: resolvedEmbed || (resolvedStream ? 'stream' : null),
+    offline,
+  });
   const externalOnly = view !== 'inline';
 
   useEffect(() => {
@@ -100,62 +144,96 @@ export default function CameraViewer({ camera, onClose, onLocate }: CameraViewer
       return;
     }
 
-    if (streamType === 'hls' && camera.stream_url) {
+    // Safety timeout to prevent infinite "DECRYPTING FEED..." spinning if stream hangs
+    const loadTimer = setTimeout(() => {
+      setLoading(false);
+      setError(true);
+    }, 8000);
+
+    if (streamType === 'hls' && activeHlsUrl) {
       if (Hls.isSupported() && videoRef.current) {
-        const hls = new Hls({ enableWorker: false });
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+          backBufferLength: 30,
+          maxBufferLength: 4,
+          maxMaxBufferLength: 8,
+          liveSyncDurationCount: 2,
+          liveMaxLatencyDurationCount: 3,
+        });
         hlsRef.current = hls;
-        hls.loadSource(camera.stream_url);
+        hls.loadSource(activeHlsUrl);
         hls.attachMedia(videoRef.current);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          clearTimeout(loadTimer);
           setLoading(false);
           videoRef.current?.play().catch(() => {});
         });
         hls.on(Hls.Events.ERROR, (event, data) => {
-          if (data.fatal) setError(true);
+          if (data.fatal) {
+            clearTimeout(loadTimer);
+            setLoading(false);
+            setError(true);
+          }
         });
       } else if (videoRef.current?.canPlayType('application/vnd.apple.mpegurl')) {
-        videoRef.current.src = camera.stream_url;
+        videoRef.current.src = activeHlsUrl;
         videoRef.current.addEventListener('loadedmetadata', () => {
+          clearTimeout(loadTimer);
           setLoading(false);
           videoRef.current?.play().catch(() => {});
         });
+        videoRef.current.addEventListener('error', () => {
+          clearTimeout(loadTimer);
+          setLoading(false);
+          setError(true);
+        });
       }
-      return;
+      return () => clearTimeout(loadTimer);
     }
 
     if (streamType === 'mjpeg' && camera.stream_url) {
+      clearTimeout(loadTimer);
       setLoading(false);
-      return;
+      return () => clearTimeout(loadTimer);
     }
 
     if ((streamType === 'iframe' || streamType === 'mp4') && streamUrl) {
+      clearTimeout(loadTimer);
       setLoading(false);
-      return;
+      return () => clearTimeout(loadTimer);
     }
 
-    // JPG fallback
-    const targetUrl = camera.feed_url || camera.stream_url;
+    // JPG fallback - serve immediately without cache-busting to leverage memory & HTTP caching
+    const targetUrl = effectiveFeedUrl || camera.stream_url;
     if (targetUrl) {
-      const url = targetUrl.includes('?') ? `${targetUrl}&_t=${Date.now()}` : `${targetUrl}?_t=${Date.now()}`;
-      setImageUrl(url);
+      clearTimeout(loadTimer);
+      setImageUrl(targetUrl);
     } else {
+      clearTimeout(loadTimer);
       setError(true);
       setLoading(false);
     }
-  }, [camera, streamType, streamUrl, externalOnly, retryCount]);
 
-  // Auto-refresh for JPGs
+    return () => clearTimeout(loadTimer);
+  }, [camera, streamType, streamUrl, activeHlsUrl, externalOnly, retryCount, effectiveFeedUrl]);
+
+  // Smooth auto-refresh for JPGs with background image preloading
   useEffect(() => {
-    if (streamType !== 'jpg' || (!camera?.feed_url && !camera?.stream_url)) return;
-    const targetUrl = camera.feed_url || camera.stream_url;
+    if (streamType !== 'jpg') return;
+    const targetUrl = effectiveFeedUrl || camera?.stream_url;
     if (!targetUrl) return;
 
     const iv = setInterval(() => {
-      const url = targetUrl.includes('?') ? `${targetUrl}&_t=${Date.now()}` : `${targetUrl}?_t=${Date.now()}`;
-      setImageUrl(url);
+      const nextUrl = targetUrl.includes('?') ? `${targetUrl}&_t=${Date.now()}` : `${targetUrl}?_t=${Date.now()}`;
+      const img = new Image();
+      img.onload = () => {
+        setImageUrl(nextUrl);
+      };
+      img.src = nextUrl;
     }, 5000); // 5s refresh for JPG
     return () => clearInterval(iv);
-  }, [camera, streamType]);
+  }, [camera, streamType, effectiveFeedUrl]);
 
   if (!camera) return null;
 
@@ -213,7 +291,7 @@ export default function CameraViewer({ camera, onClose, onLocate }: CameraViewer
                   {streamType === 'jpg' && (
                     <button 
                       onClick={() => {
-                        const targetUrl = camera.feed_url || camera.stream_url;
+                        const targetUrl = effectiveFeedUrl || camera.stream_url;
                         if (targetUrl) {
                           const url = targetUrl.includes('?') ? `${targetUrl}&_t=${Date.now()}` : `${targetUrl}?_t=${Date.now()}`;
                           setImageUrl(url);
@@ -328,6 +406,7 @@ export default function CameraViewer({ camera, onClose, onLocate }: CameraViewer
                 className="w-full h-full border-0"
                 allow="autoplay; fullscreen"
                 allowFullScreen
+                onLoad={() => setLoading(false)}
               />
             ) : imageUrl ? (
               <img
@@ -344,7 +423,7 @@ export default function CameraViewer({ camera, onClose, onLocate }: CameraViewer
               <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/80 border border-[var(--gold-primary)]/50 px-2 py-1 shadow-[0_0_10px_rgba(0,0,0,0.8)]">
                 <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_#ef4444]" />
                 <span className="text-[9px] font-mono text-white tracking-[0.2em]">
-                  {watchLiveUrl ? 'SNAPSHOT' : streamType === 'jpg' ? 'LIVE SAT-LINK' : 'LIVE FEED'}
+                  {watchLiveUrl ? 'SNAPSHOT' : streamType === 'jpg' ? 'LIVE SAT-LINK' : 'LIVE STREAM'}
                 </span>
               </div>
             )}
@@ -379,14 +458,14 @@ export default function CameraViewer({ camera, onClose, onLocate }: CameraViewer
                 <div className="flex flex-col">
                   <span className="text-[9px] text-[var(--text-muted)] font-mono tracking-widest">FEED TYPE</span>
                   <span className="text-[9px] text-white font-mono tracking-widest uppercase">
-                    {view === 'offline' ? (gone ? 'WITHDRAWN' : 'OFFLINE') : watchLiveUrl ? 'SNAPSHOT' : externalOnly ? 'EXTERNAL' : resolvedEmbed ? 'YOUTUBE LIVE' : streamType}
+                    {view === 'offline' ? (gone ? 'WITHDRAWN' : 'OFFLINE') : watchLiveUrl ? 'SNAPSHOT' : externalOnly ? 'EXTERNAL' : resolvedEmbed ? 'YOUTUBE LIVE' : streamType === 'hls' ? 'HLS STREAM' : streamType === 'jpg' ? 'JPG SNAPSHOT' : streamType.toUpperCase()}
                   </span>
                 </div>
                 <div className="flex flex-col border-l border-white/10 pl-4">
                   <span className="text-[9px] text-[var(--text-muted)] font-mono tracking-widest">STATUS</span>
                   {/* Nothing is being received locally for an external feed — don't claim otherwise. */}
                   <span className={`text-[9px] font-mono tracking-widest ${externalOnly ? 'text-[var(--gold-primary)]' : 'text-[var(--alert-green)]'}`}>
-                    {view === 'offline' ? (gone ? 'REMOVED BY SOURCE' : 'OFF AIR AT SOURCE') : watchLiveUrl ? 'LIVE VIDEO AT SOURCE' : externalOnly ? 'HOSTED OFF-PLATFORM' : 'ACTIVE / RECORDING'}
+                    {view === 'offline' ? (gone ? 'REMOVED BY SOURCE' : 'OFF AIR AT SOURCE') : watchLiveUrl ? 'LIVE VIDEO AT SOURCE' : externalOnly ? 'HOSTED OFF-PLATFORM' : streamType === 'jpg' ? 'ACTIVE / 5S REFRESH' : 'ACTIVE / LIVE VIDEO'}
                   </span>
                 </div>
               </div>

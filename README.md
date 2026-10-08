@@ -12,7 +12,7 @@
 
 **A real-time global intelligence dashboard that aggregates live flight tracking, CCTV networks, earthquake monitoring, conflict zone mapping, and 24/7 news feeds into a single GPU-accelerated interface.**
 
-[Live Demo](https://osirisai.live) · [Report Bug](https://github.com/simplifaisoul/osiris/issues) · [Request Feature](https://github.com/simplifaisoul/osiris/issues) · [Join Discord](https://discord.gg/umBykEpb98)
+[Live Demo]() · [Report Bug]() · [Request Feature]() · [Join Discord]()
 
 </div>
 
@@ -65,7 +65,7 @@ Osiris is a production-grade OSINT platform that provides situational awareness 
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                  OSIRIS CLIENT                   │
+│                  OSIRIS - LEGION CLIENT                   │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────┐ │
 │  │ MapLibre  │  │  HUD     │  │  RECON Toolkit│ │
 │  │  GL (GPU) │  │ Panels   │  │  Port Scan    │ │
@@ -283,16 +283,24 @@ MIT — see [LICENSE](LICENSE) for details.
 
 <div align="center">
 
-**🛠️ SUPPORT THE OSIRIS PROJECT**
+**🛠️ SUPPORT THE OSIRIS-LEGION PROJECT**
 The OSIRIS Global Intelligence Grid is entirely open-source, but running the backend scanners and data firehoses isn't cheap.
 
 If you want to help keep the servers alive, and support us to get access to better tools  unlock the **Special OSIRIS Console**, Currently Just a Cool UI. a you can officially support the project here : 
 
+<<<<<<< HEAD
 
 *Supporters receive the `🔴 RedTeam Console` role and access to encrypted developer comms.*
 
 
 **Built by [simplifaisoul](https://github.com/simplifaisoul)**
 **Modify by [cj7bot]()**
+=======
+*Supporters receive the `🔴 RedTeam Console` role and access to encrypted developer comms.*
+
+
+**Built by [simplifaisoul]**
+**Modified by [Cj7bot] ()**
+>>>>>>> 3a274ca (Fixes: Adding new features of the project)
 
 </div>
